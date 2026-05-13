@@ -11,7 +11,16 @@ export default defineConfig({
       },
     },
   },
-  preload: {},
+  preload: {
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve("src/preload/index.ts"),
+          askpass: resolve("src/preload/askpass.ts"),
+        },
+      },
+    },
+  },
   renderer: {
     resolve: {
       alias: {

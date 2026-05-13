@@ -1,6 +1,6 @@
 {
   "name": "hermes-desktop",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "description": "Hermes Agent Desktop — self-improving AI assistant",
   "main": "./out/main/index.js",
   "author": "fathah",
@@ -45,6 +45,7 @@
     "@electron-toolkit/tsconfig": "^2.0.0",
     "@electron/rebuild": "^4.0.4",
     "@tailwindcss/vite": "^4.2.2",
+    "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.8.0",
     "@testing-library/react": "^16.3.0",
     "@types/better-sqlite3": "^7.6.13",

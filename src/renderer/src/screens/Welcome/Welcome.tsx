@@ -1,7 +1,14 @@
 import { useState } from "react";
 import HermesLogo from "../../components/common/HermesLogo";
-import { ArrowRight, Refresh, Copy, Globe, Spinner } from "../../assets/icons";
-import { INSTALL_CMD } from "../../constants";
+import {
+  ArrowRight,
+  Refresh,
+  Copy,
+  Globe,
+  KeyRound,
+  Spinner,
+} from "../../assets/icons";
+import { getInstallCmd } from "../../constants";
 import { useI18n } from "../../components/useI18n";
 
 interface WelcomeProps {
@@ -325,45 +332,40 @@ function Welcome({
               {t("welcome.retryInstall")}
               <Refresh size={16} />
             </button>
-
             <div className="welcome-divider">
               <span>{t("welcome.dividerOr")}</span>
             </div>
-
             <div className="welcome-terminal-option">
               <p className="welcome-terminal-label">
                 {t("welcome.terminalInstallHint")}
               </p>
               <div className="welcome-terminal-box">
-                <code>{INSTALL_CMD}</code>
+                <code>{getInstallCmd()}</code>
                 <button
                   className="btn-ghost welcome-copy-btn"
-                  onClick={() => navigator.clipboard.writeText(INSTALL_CMD)}
+                  onClick={() => navigator.clipboard.writeText(getInstallCmd())}
                   title={t("welcome.copyInstallCommand")}
                 >
                   <Copy size={14} />
                 </button>
               </div>
             </div>
-
             <button
               className="btn btn-secondary welcome-recheck-btn"
               onClick={onRecheck}
             >
               {t("welcome.recheck")}
             </button>
-
             <div className="welcome-divider">
-              <span>or</span>
+              <span>{t("welcome.dividerOr")}</span>
             </div>
-
             <button
               className="btn btn-secondary welcome-recheck-btn"
               onClick={() => setPanel("ssh")}
             >
-              🔐 Connect via SSH
+              <KeyRound size={16} />
+              Connect via SSH
             </button>
-
             <button
               className="btn btn-secondary welcome-recheck-btn"
               onClick={() => setPanel("remote")}
@@ -391,12 +393,14 @@ function Welcome({
             className="btn btn-secondary welcome-recheck-btn"
             onClick={() => setPanel("ssh")}
           >
-            🔐 Connect via SSH
+            <KeyRound size={16} />
+            Connect via SSH
           </button>
 
           <button
             className="btn btn-secondary welcome-recheck-btn"
             onClick={() => setPanel("remote")}
+            style={{ marginTop: 12 }}
           >
             <Globe size={16} />
             {t("welcome.connectRemote")}

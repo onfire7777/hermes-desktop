@@ -16,6 +16,7 @@ import {
   Slash,
   Zap,
 } from "lucide-react";
+import { isImeComposing } from "./keyboard";
 
 // ── Slash Commands ──────────────────────────────────────
 
@@ -558,7 +559,11 @@ function Chat({
     }
   }
 
-  function handleKeyDown(e: React.KeyboardEvent): void {
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>): void {
+    if (isImeComposing(e)) {
+      return;
+    }
+
     // Slash menu keyboard navigation
     if (slashMenuOpen && filteredSlashCommands.length > 0) {
       if (e.key === "ArrowDown") {
