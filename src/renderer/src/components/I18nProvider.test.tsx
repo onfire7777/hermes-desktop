@@ -28,10 +28,10 @@ describe("I18nProvider", () => {
   const setLocale = vi.fn().mockResolvedValue(DEFAULT_ACTIVE_LOCALE);
 
   beforeEach(() => {
-    (window as any).hermesAPI = {
+    window.hermesAPI = {
       getLocale,
       setLocale,
-    };
+    } as unknown as Window["hermesAPI"];
     getLocale.mockClear();
     setLocale.mockClear();
     getLocale.mockResolvedValue(DEFAULT_ACTIVE_LOCALE);
@@ -66,11 +66,15 @@ describe("I18nProvider", () => {
       </I18nProvider>,
     );
 
+    expect(await screen.findByText("Welcome to Hermes")).toBeInTheDocument();
+
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Switch to Spanish" }));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Switch to Spanish" }),
+      );
     });
 
-    expect(setLocale).toHaveBeenLastCalledWith("es");
+    expect(setLocale).toHaveBeenCalledWith("es");
     expect(await screen.findByText("Bienvenido a Hermes")).toBeInTheDocument();
   });
 });

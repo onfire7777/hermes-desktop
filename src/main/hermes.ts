@@ -12,7 +12,12 @@ import {
   getEnhancedPath,
 } from "./installer";
 import { getModelConfig, readEnv, getConnectionConfig } from "./config";
-import { getSshTunnelUrl, isSshTunnelActive, isSshTunnelHealthy, startSshTunnel } from "./ssh-tunnel";
+import {
+  getSshTunnelUrl,
+  isSshTunnelActive,
+  isSshTunnelHealthy,
+  startSshTunnel,
+} from "./ssh-tunnel";
 import { stripAnsi } from "./utils";
 
 const LOCAL_API_URL = "http://127.0.0.1:8642";
@@ -47,10 +52,26 @@ export function setSshRemoteApiKey(key: string): void {
   _sshRemoteApiKey = key;
 }
 
+function getLocalApiKey(): string {
+  const env = readEnv();
+  return (
+    env.API_SERVER_KEY ||
+    env.HERMES_API_KEY ||
+    process.env.API_SERVER_KEY ||
+    process.env.HERMES_API_KEY ||
+    ""
+  );
+}
+
 export function getRemoteAuthHeader(): Record<string, string> {
   const conn = getConnectionConfig();
+  if (conn.mode === "local") {
+    const apiKey = getLocalApiKey();
+    return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+  }
   if (conn.mode === "ssh") {
-    if (_sshRemoteApiKey) return { Authorization: `Bearer ${_sshRemoteApiKey}` };
+    if (_sshRemoteApiKey)
+      return { Authorization: `Bearer ${_sshRemoteApiKey}` };
     return {};
   }
   if (conn.mode === "remote" && conn.apiKey) {
@@ -61,7 +82,10 @@ export function getRemoteAuthHeader(): Record<string, string> {
 
 export async function ensureSshTunnelIfNeeded(): Promise<void> {
   const conn = getConnectionConfig();
-  if (conn.mode === "ssh" && (!isSshTunnelActive() || !await isSshTunnelHealthy())) {
+  if (
+    conn.mode === "ssh" &&
+    (!isSshTunnelActive() || !(await isSshTunnelHealthy()))
+  ) {
     await startSshTunnel(conn.ssh);
   }
 }
@@ -418,7 +442,9 @@ function sendMessageViaApi(
   });
   req.on("timeout", () => {
     req.destroy();
-    finish("API request timed out. Check the SSH tunnel and remote Hermes gateway.");
+    finish(
+      "API request timed out. Check the SSH tunnel and remote Hermes gateway.",
+    );
   });
 
   req.write(body);
@@ -534,6 +560,7 @@ function sendMessageViaCli(
     cwd: HERMES_REPO,
     env,
     stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
   });
 
   let hasOutput = false;
@@ -714,6 +741,7 @@ export function startGateway(profile?: string): boolean {
     env: gatewayEnv,
     stdio: "ignore",
     detached: true,
+    windowsHide: true,
   });
 
   gatewayProcess.unref();

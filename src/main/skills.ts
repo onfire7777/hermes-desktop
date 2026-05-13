@@ -148,6 +148,7 @@ export function searchSkills(query: string): SkillSearchResult[] {
         },
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 30000,
+        windowsHide: true,
       },
     );
 
@@ -253,6 +254,7 @@ export function installSkill(
       },
       stdio: "pipe",
       timeout: 60000,
+      windowsHide: true,
     });
     return { success: true };
   } catch (err) {
@@ -282,6 +284,7 @@ export function uninstallSkill(
       },
       stdio: "pipe",
       timeout: 30000,
+      windowsHide: true,
     });
     return { success: true };
   } catch (err) {

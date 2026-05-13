@@ -11,7 +11,8 @@ export default {
   custom: "Personalizado",
   typeModelName: "Digite o nome do modelo...",
   emptyTitle: "Como posso ajudar você hoje?",
-  emptyHint: "Peça-me para escrever código, responder perguntas, pesquisar na web e mais",
+  emptyHint:
+    "Peça-me para escrever código, responder perguntas, pesquisar na web e mais",
   suggestionSearch: "Pesquisar na web",
   suggestionReminder: "Definir um lembrete",
   suggestionEmail: "Resumir e-mails",
@@ -24,8 +25,10 @@ export default {
   clearChat: "Limpar chat",
   fastMode: "Modo Rápido",
   fastModeOn: "Modo Rápido LIGADO",
-  fastModeActive: "Processamento prioritário ativo — menor latência em modelos suportados. Clique para desativar.",
-  fastModeInactive: "Ative o processamento prioritário para menor latência em modelos OpenAI e Anthropic.",
+  fastModeActive:
+    "Processamento prioritário ativo — menor latência em modelos suportados. Clique para desativar.",
+  fastModeInactive:
+    "Ative o processamento prioritário para menor latência em modelos OpenAI e Anthropic.",
   availableCommands: "Comandos Disponíveis",
   categoryChat: "Chat",
   categoryAgent: "Agente",

@@ -6,11 +6,13 @@ import {
   unlinkSync,
   mkdirSync,
 } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { homedir } from "os";
 import { createConnection } from "net";
+import { request } from "http";
 import { getEnhancedPath, HERMES_HOME } from "./installer";
 import { stripAnsi, safeWriteFile } from "./utils";
+import { readEnv } from "./config";
 
 const HERMES_OFFICE_REPO = "https://github.com/fathah/hermes-office";
 const HERMES_OFFICE_DIR = join(HERMES_HOME, "hermes-office");
@@ -19,7 +21,12 @@ const ADAPTER_PID_FILE = join(HERMES_HOME, "claw3d-adapter.pid");
 const PORT_FILE = join(HERMES_HOME, "claw3d-port");
 const WS_URL_FILE = join(HERMES_HOME, "claw3d-ws-url");
 const DEFAULT_PORT = 3000;
-const DEFAULT_WS_URL = "ws://localhost:18789";
+const configuredAdapterPort = Number(process.env.HERMES_DESKTOP_ADAPTER_PORT);
+const DEFAULT_ADAPTER_PORT =
+  Number.isFinite(configuredAdapterPort) && configuredAdapterPort > 0
+    ? Math.floor(configuredAdapterPort)
+    : 18789;
+const DEFAULT_WS_URL = `ws://localhost:${DEFAULT_ADAPTER_PORT}`;
 const CLAW3D_SETTINGS_DIR = join(homedir(), ".openclaw", "claw3d");
 
 let devServerProcess: ChildProcess | null = null;
@@ -57,6 +64,10 @@ function getSavedWsUrl(): string {
   }
 }
 
+function hasProductionBuild(): boolean {
+  return existsSync(join(HERMES_OFFICE_DIR, ".next", "BUILD_ID"));
+}
+
 export function setClaw3dWsUrl(url: string): void {
   safeWriteFile(WS_URL_FILE, url);
   // Also update the settings.json so Claw3D picks it up
@@ -87,11 +98,39 @@ function writeClaw3dSettings(wsUrl?: string): void {
       /* fresh */
     }
 
+    const existingGateway =
+      existing.gateway &&
+      typeof existing.gateway === "object" &&
+      !Array.isArray(existing.gateway)
+        ? (existing.gateway as Record<string, unknown>)
+        : {};
+    const existingProfiles =
+      existingGateway.profiles &&
+      typeof existingGateway.profiles === "object" &&
+      !Array.isArray(existingGateway.profiles)
+        ? (existingGateway.profiles as Record<string, unknown>)
+        : {};
+
     const settings = {
       ...existing,
       adapter: "hermes",
       url,
       token: "",
+      gateway: {
+        ...existingGateway,
+        url,
+        token: "",
+        adapterType: "hermes",
+        profiles: {
+          ...existingProfiles,
+          hermes: { url, token: "" },
+        },
+        lastKnownGood: {
+          url,
+          token: "",
+          adapterType: "hermes",
+        },
+      },
     };
     safeWriteFile(settingsPath, JSON.stringify(settings, null, 2));
   } catch {
@@ -110,9 +149,13 @@ function writeClaw3dSettings(wsUrl?: string): void {
         `NEXT_PUBLIC_GATEWAY_URL=${url}`,
         `CLAW3D_GATEWAY_URL=${url}`,
         `CLAW3D_GATEWAY_TOKEN=`,
-        `HERMES_ADAPTER_PORT=18789`,
+        `CLAW3D_GATEWAY_ADAPTER_TYPE=hermes`,
+        `UPSTREAM_ALLOWLIST=localhost,127.0.0.1`,
+        `HERMES_ADAPTER_PORT=${DEFAULT_ADAPTER_PORT}`,
         `HERMES_MODEL=hermes`,
         `HERMES_AGENT_NAME=Hermes`,
+        `HERMES_HOME=${join(homedir(), ".hermes")}`,
+        `OPENCLAW_STATE_DIR=${join(homedir(), ".openclaw")}`,
         "",
       ].join("\n");
       safeWriteFile(envPath, envContent);
@@ -139,6 +182,226 @@ function checkPort(port: number): Promise<boolean> {
       resolve(false);
     });
   });
+}
+
+function readHttpPath(
+  port: number,
+  path: string,
+): Promise<{ statusCode: number; body: string } | null> {
+  return new Promise((resolve) => {
+    let body = "";
+    const req = request(
+      {
+        host: "127.0.0.1",
+        port,
+        path,
+        method: "GET",
+        timeout: 1200,
+      },
+      (res) => {
+        res.setEncoding("utf8");
+        res.on("data", (chunk: string) => {
+          body += chunk;
+          if (body.length > 4096) req.destroy();
+        });
+        res.on("end", () => {
+          resolve({ statusCode: res.statusCode ?? 0, body });
+        });
+      },
+    );
+
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(null);
+    });
+    req.on("error", () => resolve(null));
+    req.end();
+  });
+}
+
+async function isCompatibleOfficeServer(port: number): Promise<boolean> {
+  const response = await readHttpPath(port, "/api/task-store");
+  if (!response || response.statusCode !== 200) return false;
+
+  try {
+    const parsed = JSON.parse(response.body) as { tasks?: unknown };
+    return Array.isArray(parsed.tasks);
+  } catch {
+    return false;
+  }
+}
+
+function findListeningPid(port: number): number | null {
+  try {
+    if (process.platform === "win32") {
+      const output = execSync("netstat -ano -p tcp", {
+        timeout: 2000,
+        windowsHide: true,
+      }).toString();
+      const escapedPort = String(port).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const listenRe = new RegExp(
+        `^\\s*TCP\\s+127\\.0\\.0\\.1:${escapedPort}\\s+\\S+\\s+LISTENING\\s+(\\d+)\\s*$`,
+        "im",
+      );
+      const match = output.match(listenRe);
+      const pid = match ? parseInt(match[1], 10) : NaN;
+      return Number.isFinite(pid) ? pid : null;
+    }
+
+    const output = execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`, {
+      timeout: 5000,
+      windowsHide: true,
+    })
+      .toString()
+      .trim()
+      .split(/\r?\n/)[0];
+    const pid = parseInt(output, 10);
+    return Number.isFinite(pid) ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function getProcessCommandLine(pid: number): string {
+  try {
+    if (process.platform === "win32") {
+      try {
+        return execSync(
+          `wmic process where processid=${pid} get CommandLine /value`,
+          { timeout: 5000, windowsHide: true },
+        )
+          .toString()
+          .replace(/^CommandLine=/i, "")
+          .trim();
+      } catch {
+        return execSync(
+          `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine"`,
+          { timeout: 5000, windowsHide: true },
+        )
+          .toString()
+          .trim();
+      }
+    }
+
+    return execSync(`ps -p ${pid} -o command=`, {
+      timeout: 5000,
+      windowsHide: true,
+    })
+      .toString()
+      .trim();
+  } catch {
+    return "";
+  }
+}
+
+function normalizeCommandLine(commandLine: string): string {
+  return commandLine.replace(/\\/g, "/").toLowerCase();
+}
+
+function isHermesAdapterCommand(commandLine: string): boolean {
+  const cmd = normalizeCommandLine(commandLine);
+  return (
+    cmd.includes("server/hermes-gateway-adapter.js") ||
+    cmd.includes("run hermes-adapter")
+  );
+}
+
+function isHermesOfficeServerCommand(commandLine: string): boolean {
+  const cmd = normalizeCommandLine(commandLine);
+  return (
+    cmd.includes("server/index.js") ||
+    ((cmd.includes("npm-cli.js") || cmd.includes("/npm")) &&
+      (cmd.includes(" run start") || cmd.includes(" run dev")))
+  );
+}
+
+function getOfficeServerOwner(
+  port: number,
+): { pid: number; commandLine: string; isHermesOffice: boolean } | null {
+  const pid = findListeningPid(port);
+  if (!pid) return null;
+
+  const commandLine = getProcessCommandLine(pid);
+  return {
+    pid,
+    commandLine,
+    isHermesOffice: isHermesOfficeServerCommand(commandLine),
+  };
+}
+
+function officeUnresponsiveError(port: number): string {
+  return `Hermes Office is already on port ${port}, but it is not responding. Press Start to restart it.`;
+}
+
+async function attachCompatibleDevServer(port: number): Promise<boolean> {
+  if (!(await isCompatibleOfficeServer(port))) return false;
+
+  const pid = findListeningPid(port);
+  if (pid) writePid(DEV_PID_FILE, pid);
+  devServerError = "";
+  return true;
+}
+
+function attachCompatibleAdapter(): boolean {
+  const pid = findListeningPid(DEFAULT_ADAPTER_PORT);
+  if (!pid) return false;
+
+  if (!isHermesAdapterCommand(getProcessCommandLine(pid))) return false;
+
+  writePid(ADAPTER_PID_FILE, pid);
+  adapterError = "";
+  return true;
+}
+
+function cleanupStalePid(
+  file: string,
+  isExpectedCommand: (cmd: string) => boolean,
+): void {
+  const pid = readPid(file);
+  if (!pid) return;
+  if (
+    !isProcessRunning(pid) ||
+    !isExpectedCommand(getProcessCommandLine(pid))
+  ) {
+    cleanupPid(file);
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForOfficeServer(
+  port: number,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (await attachCompatibleDevServer(port)) return true;
+    await delay(250);
+  } while (Date.now() < deadline);
+  return false;
+}
+
+async function waitForCompatibleAdapter(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (attachCompatibleAdapter()) return true;
+    await delay(250);
+  } while (Date.now() < deadline);
+  return false;
+}
+
+async function waitForPortFree(
+  port: number,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (!(await checkPort(port))) return true;
+    await delay(250);
+  } while (Date.now() < deadline);
+  return false;
 }
 
 export interface Claw3dStatus {
@@ -194,16 +457,14 @@ function cleanupPid(file: string): void {
 function isDevServerRunning(): boolean {
   if (devServerProcess && !devServerProcess.killed) return true;
   const pid = readPid(DEV_PID_FILE);
-  if (pid && isProcessRunning(pid)) return true;
+  if (
+    pid &&
+    isProcessRunning(pid) &&
+    isHermesOfficeServerCommand(getProcessCommandLine(pid))
+  ) {
+    return true;
+  }
   cleanupPid(DEV_PID_FILE);
-  return false;
-}
-
-function isAdapterRunning(): boolean {
-  if (adapterProcess && !adapterProcess.killed) return true;
-  const pid = readPid(ADAPTER_PID_FILE);
-  if (pid && isProcessRunning(pid)) return true;
-  cleanupPid(ADAPTER_PID_FILE);
   return false;
 }
 
@@ -211,10 +472,27 @@ export async function getClaw3dStatus(): Promise<Claw3dStatus> {
   const cloned = existsSync(join(HERMES_OFFICE_DIR, "package.json"));
   const installed = existsSync(join(HERMES_OFFICE_DIR, "node_modules"));
   const port = getSavedPort();
-  const devRunning = isDevServerRunning();
-  // Only check port conflict when dev server is NOT running
-  const portInUse = devRunning ? false : await checkPort(port);
-  const adapterUp = isAdapterRunning();
+  const devRunning = await attachCompatibleDevServer(port);
+  let recoverableOfficeOwner = false;
+  if (!devRunning) {
+    const owner = getOfficeServerOwner(port);
+    recoverableOfficeOwner = Boolean(owner?.isHermesOffice);
+    if (owner?.isHermesOffice) {
+      writePid(DEV_PID_FILE, owner.pid);
+      devServerError = officeUnresponsiveError(port);
+    } else {
+      cleanupStalePid(DEV_PID_FILE, isHermesOfficeServerCommand);
+    }
+  }
+  // Only report a conflict when the occupied port is not already Hermes Office.
+  let portInUse = false;
+  if (!devRunning && !recoverableOfficeOwner) {
+    portInUse = await checkPort(port);
+  }
+  const adapterUp = attachCompatibleAdapter();
+  if (!adapterUp) {
+    cleanupStalePid(ADAPTER_PID_FILE, isHermesAdapterCommand);
+  }
   const error = devServerError || adapterError;
   return {
     cloned,
@@ -230,6 +508,93 @@ export async function getClaw3dStatus(): Promise<Claw3dStatus> {
 }
 
 let _cachedNpmPath: string | null = null;
+let _cachedNpmCommand: { command: string; argsPrefix: string[] } | null = null;
+
+function commandNames(name: "node" | "npm"): string[] {
+  if (process.platform !== "win32") return [name];
+  return name === "npm" ? ["npm.cmd", "npm.exe", "npm"] : ["node.exe", "node"];
+}
+
+function pathDelimiter(): string {
+  return process.platform === "win32" ? ";" : ":";
+}
+
+function resolveFromPath(name: "node" | "npm"): string | null {
+  const dirs = getEnhancedPath()
+    .split(pathDelimiter())
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  for (const dir of dirs) {
+    for (const cmd of commandNames(name)) {
+      const candidate = join(dir, cmd);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+function findNode(): string | null {
+  const home = homedir();
+  const candidates =
+    process.platform === "win32"
+      ? [
+          process.env.ProgramFiles
+            ? join(process.env.ProgramFiles, "nodejs", "node.exe")
+            : "C:\\Program Files\\nodejs\\node.exe",
+          process.env["ProgramFiles(x86)"]
+            ? join(process.env["ProgramFiles(x86)"], "nodejs", "node.exe")
+            : "C:\\Program Files (x86)\\nodejs\\node.exe",
+          process.env.LOCALAPPDATA
+            ? join(process.env.LOCALAPPDATA, "Programs", "nodejs", "node.exe")
+            : join(home, "AppData", "Local", "Programs", "nodejs", "node.exe"),
+          join(home, "AppData", "Local", "OpenAI", "Codex", "bin", "node.exe"),
+        ]
+      : ["/usr/local/bin/node", "/opt/homebrew/bin/node"];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return resolveFromPath("node");
+}
+
+function findNpmCli(npmPath: string): string | null {
+  const candidates = [
+    join(dirname(npmPath), "node_modules", "npm", "bin", "npm-cli.js"),
+  ];
+
+  if (process.platform === "win32") {
+    if (process.env.ProgramFiles) {
+      candidates.push(
+        join(
+          process.env.ProgramFiles,
+          "nodejs",
+          "node_modules",
+          "npm",
+          "bin",
+          "npm-cli.js",
+        ),
+      );
+    }
+    if (process.env["ProgramFiles(x86)"]) {
+      candidates.push(
+        join(
+          process.env["ProgramFiles(x86)"],
+          "nodejs",
+          "node_modules",
+          "npm",
+          "bin",
+          "npm-cli.js",
+        ),
+      );
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
 
 function findNpm(): string {
   if (_cachedNpmPath) return _cachedNpmPath;
@@ -238,14 +603,53 @@ function findNpm(): string {
 
   // Try common locations first (no process spawn).
   // Includes nvm, volta, fnm, and system paths.
-  const candidates = [
-    join(home, ".volta", "bin", "npm"),
-    join(home, ".asdf", "shims", "npm"),
-    join(home, ".local", "share", "fnm", "aliases", "default", "bin", "npm"),
-    join(home, ".fnm", "aliases", "default", "bin", "npm"),
-    "/usr/local/bin/npm",
-    "/opt/homebrew/bin/npm",
-  ];
+  const candidates =
+    process.platform === "win32"
+      ? [
+          join(home, ".volta", "bin", "npm.cmd"),
+          join(home, ".volta", "bin", "npm.exe"),
+          join(home, ".asdf", "shims", "npm.cmd"),
+          join(
+            home,
+            ".local",
+            "share",
+            "fnm",
+            "aliases",
+            "default",
+            "bin",
+            "npm.cmd",
+          ),
+          join(home, ".fnm", "aliases", "default", "bin", "npm.cmd"),
+          process.env.APPDATA
+            ? join(process.env.APPDATA, "npm", "npm.cmd")
+            : join(home, "AppData", "Roaming", "npm", "npm.cmd"),
+          process.env.ProgramFiles
+            ? join(process.env.ProgramFiles, "nodejs", "npm.cmd")
+            : "C:\\Program Files\\nodejs\\npm.cmd",
+          process.env["ProgramFiles(x86)"]
+            ? join(process.env["ProgramFiles(x86)"], "nodejs", "npm.cmd")
+            : "C:\\Program Files (x86)\\nodejs\\npm.cmd",
+          process.env.LOCALAPPDATA
+            ? join(process.env.LOCALAPPDATA, "Programs", "nodejs", "npm.cmd")
+            : join(home, "AppData", "Local", "Programs", "nodejs", "npm.cmd"),
+        ]
+      : [
+          join(home, ".volta", "bin", "npm"),
+          join(home, ".asdf", "shims", "npm"),
+          join(
+            home,
+            ".local",
+            "share",
+            "fnm",
+            "aliases",
+            "default",
+            "bin",
+            "npm",
+          ),
+          join(home, ".fnm", "aliases", "default", "bin", "npm"),
+          "/usr/local/bin/npm",
+          "/opt/homebrew/bin/npm",
+        ];
 
   // Discover nvm npm dynamically (active version)
   const nvmDir = process.env.NVM_DIR || join(home, ".nvm");
@@ -257,12 +661,22 @@ function findNpm(): string {
         .sort()
         .reverse();
       for (const v of versions) {
-        candidates.unshift(join(nvmVersions, v, "bin", "npm"));
+        candidates.unshift(
+          join(
+            nvmVersions,
+            v,
+            "bin",
+            process.platform === "win32" ? "npm.cmd" : "npm",
+          ),
+        );
       }
     } catch {
       /* non-fatal */
     }
   }
+
+  const pathNpm = resolveFromPath("npm");
+  if (pathNpm) candidates.unshift(pathNpm);
 
   for (const c of candidates) {
     if (existsSync(c)) {
@@ -273,13 +687,22 @@ function findNpm(): string {
 
   // Fallback: which/where (blocks main thread — only runs once)
   try {
-    const npmPath = execSync("which npm 2>/dev/null || where npm 2>/dev/null", {
-      env: { ...process.env, PATH: getEnhancedPath() },
-      timeout: 5000,
-    })
+    const npmPath = execSync(
+      process.platform === "win32" ? "where npm" : "which npm",
+      {
+        env: { ...process.env, PATH: getEnhancedPath() },
+        timeout: 5000,
+        windowsHide: true,
+      },
+    )
       .toString()
       .trim()
-      .split("\n")[0];
+      .split(/\r?\n/)
+      .find((line) =>
+        process.platform === "win32"
+          ? line.trim().toLowerCase().endsWith("npm.cmd")
+          : Boolean(line.trim()),
+      );
     if (npmPath && existsSync(npmPath)) {
       _cachedNpmPath = npmPath;
       return npmPath;
@@ -292,10 +715,48 @@ function findNpm(): string {
   return "npm";
 }
 
+function findNpmCommand(): { command: string; argsPrefix: string[] } {
+  if (_cachedNpmCommand) return _cachedNpmCommand;
+
+  const npm = findNpm();
+  if (process.platform === "win32") {
+    const node = findNode();
+    const npmCli = findNpmCli(npm);
+    if (node && npmCli) {
+      _cachedNpmCommand = { command: node, argsPrefix: [npmCli] };
+      return _cachedNpmCommand;
+    }
+  }
+
+  _cachedNpmCommand = { command: npm, argsPrefix: [] };
+  return _cachedNpmCommand;
+}
+
+function spawnNpm(
+  args: string[],
+  options: Parameters<typeof spawn>[2],
+): ChildProcess {
+  const npm = findNpmCommand();
+  return spawn(npm.command, [...npm.argsPrefix, ...args], {
+    ...options,
+    windowsHide: true,
+  });
+}
+
+function spawnNode(
+  args: string[],
+  options: Parameters<typeof spawn>[2],
+): ChildProcess {
+  return spawn(findNode() || "node", args, {
+    ...options,
+    windowsHide: true,
+  });
+}
+
 export async function setupClaw3d(
   onProgress: (progress: Claw3dSetupProgress) => void,
 ): Promise<void> {
-  const totalSteps = 2;
+  const totalSteps = 3;
   let log = "";
 
   function emit(step: number, title: string, text: string): void {
@@ -329,6 +790,7 @@ export async function setupClaw3d(
           cwd: homedir(),
           env,
           stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
         },
       );
 
@@ -362,6 +824,7 @@ export async function setupClaw3d(
         cwd: HERMES_OFFICE_DIR,
         env,
         stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
       });
 
       proc.stdout?.on("data", (data: Buffer) => {
@@ -381,10 +844,9 @@ export async function setupClaw3d(
 
   // Step 2: npm install
   emit(2, "Installing dependencies...", "Running npm install...\n");
-  const npm = findNpm();
 
   await new Promise<void>((resolve, reject) => {
-    const proc = spawn(npm, ["install"], {
+    const proc = spawnNpm(["install"], {
       cwd: HERMES_OFFICE_DIR,
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -414,12 +876,60 @@ export async function setupClaw3d(
     );
   });
 
-  // Write config files so Claw3D skips onboarding
+  // Write config files so Claw3D skips onboarding and the production build
+  // gets the correct public gateway defaults.
   writeClaw3dSettings();
+
+  // Step 3: production build
+  emit(3, "Building Claw3D...", "Running npm run build...\n");
+
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawnNpm(["run", "build"], {
+      cwd: HERMES_OFFICE_DIR,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    proc.stdout?.on("data", (data: Buffer) => {
+      emit(3, "Building Claw3D...", stripAnsi(data.toString()));
+    });
+    proc.stderr?.on("data", (data: Buffer) => {
+      emit(3, "Building Claw3D...", stripAnsi(data.toString()));
+    });
+
+    proc.on("close", (code) => {
+      if (code === 0) {
+        emit(3, "Building Claw3D...", "Build complete.\n");
+        resolve();
+      } else {
+        reject(new Error(`npm run build failed (exit code ${code})`));
+      }
+    });
+    proc.on("error", (err) =>
+      reject(new Error(`Failed to run npm build: ${err.message}`)),
+    );
+  });
 }
 
 function killProcessTree(proc: ChildProcess): void {
   if (proc.pid) {
+    if (process.platform === "win32") {
+      try {
+        execSync(`taskkill /PID ${proc.pid} /T /F`, {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+        return;
+      } catch {
+        try {
+          proc.kill();
+        } catch {
+          /* already dead */
+        }
+        return;
+      }
+    }
+
     try {
       process.kill(-proc.pid, "SIGTERM");
     } catch {
@@ -447,19 +957,34 @@ export function startDevServer(): boolean {
   devServerError = "";
   devServerLogs = "";
   const port = getSavedPort();
-  const npm = findNpm();
-  const proc = spawn(npm, ["run", "dev"], {
-    cwd: HERMES_OFFICE_DIR,
-    env: {
-      ...process.env,
-      PATH: getEnhancedPath(),
-      HOME: homedir(),
-      TERM: "dumb",
-      PORT: String(port),
+  const wsUrl = getSavedWsUrl();
+  const script = hasProductionBuild() ? "start" : "dev";
+  const proc = spawnNode(
+    ["server/index.js", ...(script === "dev" ? ["--dev"] : [])],
+    {
+      cwd: HERMES_OFFICE_DIR,
+      env: {
+        ...process.env,
+        PATH: getEnhancedPath(),
+        HOME: homedir(),
+        TERM: "dumb",
+        PORT: String(port),
+        HOST: "127.0.0.1",
+        NEXT_PUBLIC_GATEWAY_URL: wsUrl,
+        CLAW3D_GATEWAY_URL: wsUrl,
+        CLAW3D_GATEWAY_TOKEN: "",
+        CLAW3D_GATEWAY_ADAPTER_TYPE: "hermes",
+        UPSTREAM_ALLOWLIST: "localhost,127.0.0.1",
+        HERMES_ADAPTER_PORT: String(DEFAULT_ADAPTER_PORT),
+        HERMES_MODEL: "hermes",
+        HERMES_AGENT_NAME: "Hermes",
+        HERMES_HOME: join(homedir(), ".hermes"),
+        OPENCLAW_STATE_DIR: join(homedir(), ".openclaw"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
     },
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: true,
-  });
+  );
 
   devServerProcess = proc;
   if (proc.pid) writePid(DEV_PID_FILE, proc.pid);
@@ -501,15 +1026,53 @@ export function stopDevServer(): void {
     devServerProcess = null;
   }
 
-  const pid = readPid(DEV_PID_FILE);
-  if (pid) {
-    try {
-      process.kill(-pid, "SIGTERM");
-    } catch {
+  const listeningPid = findListeningPid(getSavedPort());
+  if (
+    listeningPid &&
+    isHermesOfficeServerCommand(getProcessCommandLine(listeningPid))
+  ) {
+    if (process.platform === "win32") {
       try {
-        process.kill(pid, "SIGTERM");
+        execSync(`taskkill /PID ${listeningPid} /T /F`, {
+          stdio: "ignore",
+          windowsHide: true,
+        });
       } catch {
         /* already dead */
+      }
+    } else {
+      try {
+        process.kill(-listeningPid, "SIGTERM");
+      } catch {
+        try {
+          process.kill(listeningPid, "SIGTERM");
+        } catch {
+          /* already dead */
+        }
+      }
+    }
+  }
+
+  const pid = readPid(DEV_PID_FILE);
+  if (pid && isHermesOfficeServerCommand(getProcessCommandLine(pid))) {
+    if (process.platform === "win32") {
+      try {
+        execSync(`taskkill /PID ${pid} /T /F`, {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+      } catch {
+        /* already dead */
+      }
+    } else {
+      try {
+        process.kill(-pid, "SIGTERM");
+      } catch {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {
+          /* already dead */
+        }
       }
     }
   }
@@ -517,19 +1080,34 @@ export function stopDevServer(): void {
 }
 
 export function startAdapter(): boolean {
-  if (isAdapterRunning()) return true;
+  if (adapterProcess && !adapterProcess.killed) return true;
+  if (attachCompatibleAdapter()) return true;
+  cleanupStalePid(ADAPTER_PID_FILE, isHermesAdapterCommand);
   if (!existsSync(join(HERMES_OFFICE_DIR, "node_modules"))) return false;
 
   adapterError = "";
   adapterLogs = "";
-  const npm = findNpm();
-  const proc = spawn(npm, ["run", "hermes-adapter"], {
+  const hermesEnv = readEnv();
+  const apiKey =
+    hermesEnv.API_SERVER_KEY ||
+    hermesEnv.HERMES_API_KEY ||
+    process.env.API_SERVER_KEY ||
+    process.env.HERMES_API_KEY ||
+    "";
+  const proc = spawnNode(["server/hermes-gateway-adapter.js"], {
     cwd: HERMES_OFFICE_DIR,
     env: {
       ...process.env,
       PATH: getEnhancedPath(),
       HOME: homedir(),
       TERM: "dumb",
+      HERMES_API_URL: "http://127.0.0.1:8642",
+      HERMES_API_KEY: apiKey,
+      HERMES_ADAPTER_PORT: String(DEFAULT_ADAPTER_PORT),
+      HERMES_MODEL: "hermes",
+      HERMES_AGENT_NAME: "Hermes",
+      HERMES_HOME: join(homedir(), ".hermes"),
+      OPENCLAW_STATE_DIR: join(homedir(), ".openclaw"),
     },
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
@@ -573,22 +1151,63 @@ export function stopAdapter(): void {
     adapterProcess = null;
   }
 
-  const pid = readPid(ADAPTER_PID_FILE);
-  if (pid) {
-    try {
-      process.kill(-pid, "SIGTERM");
-    } catch {
+  const listeningPid = findListeningPid(DEFAULT_ADAPTER_PORT);
+  if (
+    listeningPid &&
+    isHermesAdapterCommand(getProcessCommandLine(listeningPid))
+  ) {
+    if (process.platform === "win32") {
       try {
-        process.kill(pid, "SIGTERM");
+        execSync(`taskkill /PID ${listeningPid} /T /F`, {
+          stdio: "ignore",
+          windowsHide: true,
+        });
       } catch {
         /* already dead */
+      }
+    } else {
+      try {
+        process.kill(-listeningPid, "SIGTERM");
+      } catch {
+        try {
+          process.kill(listeningPid, "SIGTERM");
+        } catch {
+          /* already dead */
+        }
+      }
+    }
+  }
+
+  const pid = readPid(ADAPTER_PID_FILE);
+  if (pid && isHermesAdapterCommand(getProcessCommandLine(pid))) {
+    if (process.platform === "win32") {
+      try {
+        execSync(`taskkill /PID ${pid} /T /F`, {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+      } catch {
+        /* already dead */
+      }
+    } else {
+      try {
+        process.kill(-pid, "SIGTERM");
+      } catch {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {
+          /* already dead */
+        }
       }
     }
   }
   cleanupPid(ADAPTER_PID_FILE);
 }
 
-export function startAll(): { success: boolean; error?: string } {
+export async function startAll(): Promise<{
+  success: boolean;
+  error?: string;
+}> {
   if (!existsSync(join(HERMES_OFFICE_DIR, "node_modules"))) {
     return {
       success: false,
@@ -597,20 +1216,59 @@ export function startAll(): { success: boolean; error?: string } {
   }
 
   const port = getSavedPort();
+  writeClaw3dSettings();
 
   // Start dev server
-  const devOk = startDevServer();
+  let devOk = await attachCompatibleDevServer(port);
+  if (!devOk) {
+    const owner = getOfficeServerOwner(port);
+    if (owner?.isHermesOffice) {
+      devServerError = officeUnresponsiveError(port);
+      stopDevServer();
+      await waitForPortFree(port, 5000);
+    } else if (await checkPort(port)) {
+      return {
+        success: false,
+        error: `Port ${port} is in use by another process. Change the Office port in settings or stop the process using that port.`,
+      };
+    }
+  }
+  devOk = await attachCompatibleDevServer(port);
+  if (!devOk && (await checkPort(port))) {
+    return {
+      success: false,
+      error: `Port ${port} is in use by another process. Change the Office port in settings or stop the process using that port.`,
+    };
+  }
+  if (!devOk) devOk = startDevServer();
   if (!devOk) {
     return {
       success: false,
       error: `Failed to start dev server on port ${port}`,
     };
   }
+  devOk = await waitForOfficeServer(port, 20000);
+  if (!devOk) {
+    return {
+      success: false,
+      error: `Hermes Office did not become ready on http://localhost:${port}.`,
+    };
+  }
 
   // Start adapter
-  const adapterOk = startAdapter();
+  let adapterOk = attachCompatibleAdapter();
+  if (!adapterOk) adapterOk = startAdapter();
   if (!adapterOk) {
     return { success: false, error: "Failed to start Hermes adapter" };
+  }
+  adapterOk = await waitForCompatibleAdapter(12000);
+  if (!adapterOk) {
+    return {
+      success: false,
+      error:
+        adapterError ||
+        `Hermes adapter did not start listening on ws://localhost:${DEFAULT_ADAPTER_PORT}.`,
+    };
   }
 
   return { success: true };

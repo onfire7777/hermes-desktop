@@ -152,7 +152,11 @@ function runCronCommand(
     execFile(
       HERMES_PYTHON,
       cliArgs,
-      { cwd: join(HERMES_HOME, "hermes-agent"), timeout: 15000 },
+      {
+        cwd: join(HERMES_HOME, "hermes-agent"),
+        timeout: 15000,
+        windowsHide: true,
+      },
       (err, stdout, stderr) => {
         if (err) {
           resolve({

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "path";
-import { mkdirSync, rmSync, existsSync } from "fs";
+import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "fs";
 
 // vi.hoisted runs before module imports, so we can't reference imported
 // helpers here — use the bare Node modules via require.
@@ -34,7 +34,10 @@ vi.mock("../src/main/locale", () => ({
 }));
 
 import Database from "better-sqlite3";
-import { syncSessionCache } from "../src/main/session-cache";
+import {
+  markSessionCacheDirty,
+  syncSessionCache,
+} from "../src/main/session-cache";
 
 const CACHE_FILE = join(TEST_HOME, "desktop", "sessions.json");
 const DB_PATH = join(TEST_HOME, "state.db");
@@ -76,19 +79,66 @@ function seedDb(
   const insMessage = db.prepare(
     `INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)`,
   );
-  for (const s of sessions) {
-    insSession.run(
-      s.id,
-      s.source ?? "cli",
-      s.started_at,
-      s.message_count ?? 0,
-      s.model ?? "gpt-4o",
-      s.title ?? null,
-    );
-    if (s.firstUserMessage) {
-      insMessage.run(s.id, "user", s.firstUserMessage, s.started_at);
+  const insertSessions = db.transaction((items: typeof sessions) => {
+    for (const s of items) {
+      insSession.run(
+        s.id,
+        s.source ?? "cli",
+        s.started_at,
+        s.message_count ?? 0,
+        s.model ?? "gpt-4o",
+        s.title ?? null,
+      );
+      if (s.firstUserMessage) {
+        insMessage.run(s.id, "user", s.firstUserMessage, s.started_at);
+      }
     }
-  }
+  });
+
+  insertSessions(sessions);
+  db.close();
+}
+
+function seedSessionsTableOnly(
+  sessions: Array<{
+    id: string;
+    started_at: number;
+    source?: string;
+    message_count?: number;
+    model?: string;
+    title?: string | null;
+  }>,
+): void {
+  const db = new Database(DB_PATH);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      source TEXT,
+      started_at INTEGER,
+      ended_at INTEGER,
+      message_count INTEGER,
+      model TEXT,
+      title TEXT
+    );
+  `);
+  const insSession = db.prepare(
+    `INSERT OR REPLACE INTO sessions (id, source, started_at, ended_at, message_count, model, title)
+     VALUES (?, ?, ?, NULL, ?, ?, ?)`,
+  );
+  const insertSessions = db.transaction((items: typeof sessions) => {
+    for (const s of items) {
+      insSession.run(
+        s.id,
+        s.source ?? "cli",
+        s.started_at,
+        s.message_count ?? 0,
+        s.model ?? "gpt-4o",
+        s.title ?? null,
+      );
+    }
+  });
+
+  insertSessions(sessions);
   db.close();
 }
 
@@ -220,5 +270,114 @@ describe("syncSessionCache", () => {
     expect(result).toHaveLength(N);
     expect(result.every((r) => r.messageCount === 2)).toBe(true);
     expect(elapsed).toBeLessThan(500);
+  });
+
+  it("supports a bounded startup sync without marking older history complete", () => {
+    const base = Math.floor(Date.now() / 1000) + 600;
+    seedDb(
+      Array.from({ length: 60 }, (_, i) => ({
+        id: `s${i}`,
+        started_at: base + i,
+        message_count: 1,
+        firstUserMessage: `message ${i}`,
+      })),
+    );
+
+    const partial = syncSessionCache(10);
+    expect(partial).toHaveLength(10);
+    expect(partial.map((s) => s.id)).toEqual([
+      "s59",
+      "s58",
+      "s57",
+      "s56",
+      "s55",
+      "s54",
+      "s53",
+      "s52",
+      "s51",
+      "s50",
+    ]);
+    expect(JSON.parse(readFileSync(CACHE_FILE, "utf-8")).lastSync).toBe(0);
+
+    const full = syncSessionCache();
+    expect(full).toHaveLength(60);
+  });
+
+  it("reuses a fresh bounded startup cache until chat marks it dirty", () => {
+    const future = Math.floor(Date.now() / 1000) + 600;
+    seedDb([
+      {
+        id: "s1",
+        started_at: future,
+        message_count: 1,
+        firstUserMessage: "original",
+      },
+    ]);
+
+    expect(syncSessionCache(50).map((s) => s.id)).toEqual(["s1"]);
+
+    seedDb([
+      {
+        id: "s1",
+        started_at: future,
+        message_count: 7,
+        firstUserMessage: "original",
+      },
+      {
+        id: "s2",
+        started_at: future + 200,
+        message_count: 2,
+        firstUserMessage: "new chat",
+      },
+    ]);
+
+    const cached = syncSessionCache(50);
+    expect(cached.map((s) => s.id)).toEqual(["s1"]);
+    expect(cached[0].messageCount).toBe(1);
+
+    markSessionCacheDirty();
+    const refreshed = syncSessionCache(50);
+    expect(refreshed.map((s) => s.id)).toEqual(["s2", "s1"]);
+    expect(refreshed.find((s) => s.id === "s1")?.messageCount).toBe(7);
+  });
+
+  it("treats an empty cache with lastSync as a first sync", () => {
+    const now = Math.floor(Date.now() / 1000);
+    mkdirSync(join(TEST_HOME, "desktop"), { recursive: true });
+    writeFileSync(
+      CACHE_FILE,
+      JSON.stringify({ sessions: [], lastSync: now + 86400 }),
+      "utf-8",
+    );
+    seedDb([
+      {
+        id: "s1",
+        started_at: now,
+        message_count: 2,
+        firstUserMessage: "Cache should not hide me",
+      },
+    ]);
+
+    expect(syncSessionCache()).toHaveLength(1);
+  });
+
+  it("falls back to the sessions table when message title lookup is unavailable", () => {
+    const now = Math.floor(Date.now() / 1000);
+    seedSessionsTableOnly([
+      {
+        id: "s1",
+        started_at: now,
+        message_count: 3,
+        model: "gpt-5.5",
+      },
+    ]);
+
+    const result = syncSessionCache();
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: "s1",
+      messageCount: 3,
+      model: "gpt-5.5",
+    });
   });
 });

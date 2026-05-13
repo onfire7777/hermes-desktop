@@ -46,9 +46,12 @@ function Office({ visible }: { visible?: boolean }): React.JSX.Element {
   const startingRef = useRef(starting);
   const runningRef = useRef(running);
   const errorRef = useRef(error);
-  startingRef.current = starting;
-  runningRef.current = running;
-  errorRef.current = error;
+
+  useEffect(() => {
+    startingRef.current = starting;
+    runningRef.current = running;
+    errorRef.current = error;
+  }, [starting, running, error]);
 
   const checkStatus = useCallback(async (): Promise<void> => {
     setState("checking");
@@ -236,12 +239,8 @@ function Office({ visible }: { visible?: boolean }): React.JSX.Element {
         <div className="office-center">
           <div className="office-setup-card">
             <h2 className="office-setup-title">{t("office.setupTitle")}</h2>
-            <p className="office-setup-desc">
-              {t("office.setupDesc1")}
-            </p>
-            <p className="office-setup-desc">
-              {t("office.setupDesc2")}
-            </p>
+            <p className="office-setup-desc">{t("office.setupDesc1")}</p>
+            <p className="office-setup-desc">{t("office.setupDesc2")}</p>
             {error && <div className="office-error">{error}</div>}
             <div className="office-setup-actions">
               <button className="btn btn-primary" onClick={handleInstall}>
@@ -255,7 +254,8 @@ function Office({ visible }: { visible?: boolean }): React.JSX.Element {
                   )
                 }
               >
-                <ExternalLink size={14} />{t("office.viewOnGithub")}
+                <ExternalLink size={14} />
+                {t("office.viewOnGithub")}
               </button>
             </div>
           </div>

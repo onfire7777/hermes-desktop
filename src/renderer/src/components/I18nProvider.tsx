@@ -41,8 +41,10 @@ export function I18nProvider({
     void window.hermesAPI
       ?.getLocale?.()
       .then((mainLocale) => {
-        if (cancelled || !mainLocale || mainLocale === locale) return;
-        setLocaleState(mainLocale);
+        if (cancelled || !mainLocale) return;
+        setLocaleState((current) =>
+          mainLocale === current ? current : mainLocale,
+        );
       })
       .catch(() => {
         /* ignore */

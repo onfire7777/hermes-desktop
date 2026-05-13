@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback, memo } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo, memo } from "react";
 import { Plus, Search, X, ChatBubble } from "../../assets/icons";
 import { useI18n } from "../../components/useI18n";
 
@@ -21,10 +21,66 @@ interface SearchResult {
   snippet: string;
 }
 
+interface SessionSummary {
+  id: string;
+  source: string;
+  startedAt: number;
+  messageCount: number;
+  model: string;
+  title: string | null;
+}
+
 interface SessionsProps {
   onResumeSession: (sessionId: string) => void;
   onNewChat: () => void;
   currentSessionId: string | null;
+}
+
+const SESSION_CACHE_READ_TIMEOUT_MS = 4000;
+const SESSION_DIRECT_READ_TIMEOUT_MS = 3000;
+const SESSION_SYNC_TIMEOUT_MS = 10000;
+const SESSION_SEARCH_TIMEOUT_MS = 8000;
+const SESSION_SYNC_LIMIT = 200;
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "";
+}
+
+function toCachedSession(
+  session: SessionSummary,
+  fallbackTitle: string,
+): CachedSession {
+  return {
+    id: session.id,
+    title: session.title || fallbackTitle,
+    startedAt: session.startedAt,
+    source: session.source,
+    messageCount: session.messageCount,
+    model: session.model,
+  };
 }
 
 function formatTime(ts: number): string {
@@ -155,23 +211,95 @@ function Sessions({
   const { t } = useI18n();
   const [sessions, setSessions] = useState<CachedSession[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const loadRequestId = useRef(0);
+  const hasLoadedRef = useRef(false);
 
   const loadSessions = useCallback(async (): Promise<void> => {
-    setLoading(true);
-    const cached = await window.hermesAPI.listCachedSessions(50);
-    if (cached.length > 0) {
-      setSessions(cached);
-      setLoading(false);
+    const requestId = ++loadRequestId.current;
+    if (!hasLoadedRef.current) setLoading(true);
+    setLoadError(null);
+    let cached: CachedSession[] = [];
+
+    try {
+      cached = await withTimeout(
+        window.hermesAPI.listCachedSessions(50),
+        SESSION_CACHE_READ_TIMEOUT_MS,
+        t("sessions.loadTimedOut"),
+      );
+      if (requestId !== loadRequestId.current) return;
+      if (cached.length > 0) {
+        setSessions(cached);
+        hasLoadedRef.current = true;
+        setLoading(false);
+      }
+    } catch {
+      cached = [];
     }
-    const synced = await window.hermesAPI.syncSessionCache();
-    setSessions(synced.slice(0, 50));
-    setLoading(false);
-  }, []);
+
+    if (cached.length === 0) {
+      try {
+        const direct = await withTimeout(
+          window.hermesAPI.listSessions(50, 0),
+          SESSION_DIRECT_READ_TIMEOUT_MS,
+          t("sessions.loadTimedOut"),
+        );
+        if (requestId !== loadRequestId.current) return;
+        setSessions(
+          direct.map((session) =>
+            toCachedSession(session, t("sessions.newConversation")),
+          ),
+        );
+        hasLoadedRef.current = true;
+        setLoading(false);
+      } catch {
+        // Keep loading until the sync fallback below has had one chance.
+      }
+    }
+
+    try {
+      const synced = await withTimeout(
+        window.hermesAPI.syncSessionCache(SESSION_SYNC_LIMIT),
+        SESSION_SYNC_TIMEOUT_MS,
+        t("sessions.loadTimedOut"),
+      );
+      if (requestId !== loadRequestId.current) return;
+      if (synced.length > 0) {
+        setSessions(synced.slice(0, 50));
+        hasLoadedRef.current = true;
+        return;
+      }
+
+      if (!hasLoadedRef.current) {
+        const direct = await withTimeout(
+          window.hermesAPI.listSessions(50, 0),
+          SESSION_DIRECT_READ_TIMEOUT_MS,
+          t("sessions.loadTimedOut"),
+        );
+        if (requestId !== loadRequestId.current) return;
+        setSessions(
+          direct.map((session) =>
+            toCachedSession(session, t("sessions.newConversation")),
+          ),
+        );
+        hasLoadedRef.current = true;
+      }
+    } catch (error) {
+      if (requestId !== loadRequestId.current) return;
+      if (!hasLoadedRef.current) setSessions([]);
+      if (!hasLoadedRef.current) {
+        setLoadError(getErrorMessage(error) || t("sessions.loadFailed"));
+      }
+    } finally {
+      if (requestId === loadRequestId.current) setLoading(false);
+    }
+  }, [t]);
 
   useEffect(() => {
     loadSessions();
@@ -182,21 +310,37 @@ function Sessions({
     if (!searchQuery.trim()) {
       setSearchResults([]);
       setIsSearching(false);
+      setSearchError(null);
       return;
     }
+    let cancelled = false;
     setIsSearching(true);
+    setSearchError(null);
     searchTimer.current = setTimeout(async () => {
-      const results = await window.hermesAPI.searchSessions(searchQuery);
-      setSearchResults(results);
-      setIsSearching(false);
+      try {
+        const results = await withTimeout(
+          window.hermesAPI.searchSessions(searchQuery),
+          SESSION_SEARCH_TIMEOUT_MS,
+          t("sessions.searchTimedOut"),
+        );
+        if (!cancelled) setSearchResults(results);
+      } catch (error) {
+        if (!cancelled) {
+          setSearchResults([]);
+          setSearchError(getErrorMessage(error) || t("sessions.searchFailed"));
+        }
+      } finally {
+        if (!cancelled) setIsSearching(false);
+      }
     }, 300);
     return () => {
+      cancelled = true;
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-  }, [searchQuery]);
+  }, [searchQuery, t]);
 
   const isShowingSearch = searchQuery.trim().length > 0;
-  const grouped = groupSessions(sessions);
+  const grouped = useMemo(() => groupSessions(sessions), [sessions]);
 
   return (
     <div className="sessions-container">
@@ -233,6 +377,12 @@ function Sessions({
         </div>
       </div>
 
+      {loadError && !loading && !isShowingSearch && sessions.length > 0 && (
+        <div className="sessions-error" role="status">
+          {loadError}
+        </div>
+      )}
+
       {/* Content */}
       {loading ? (
         <div className="sessions-loading">
@@ -246,8 +396,14 @@ function Sessions({
         ) : searchResults.length === 0 ? (
           <div className="sessions-empty">
             <Search size={32} className="sessions-empty-icon" />
-            <p className="sessions-empty-text">{t("sessions.noResults")}</p>
-            <p className="sessions-empty-hint">{t("sessions.noResultsHint")}</p>
+            <p className="sessions-empty-text">
+              {searchError || t("sessions.noResults")}
+            </p>
+            <p className="sessions-empty-hint">
+              {searchError
+                ? t("sessions.searchFailedHint")
+                : t("sessions.noResultsHint")}
+            </p>
           </div>
         ) : (
           <div className="sessions-list">
@@ -276,7 +432,10 @@ function Sessions({
                     {r.source}
                   </span>
                   <span className="sessions-tag">
-                    {r.messageCount} {r.messageCount !== 1 ? t("sessions.messages") : t("sessions.messageSingular")}
+                    {r.messageCount}{" "}
+                    {r.messageCount !== 1
+                      ? t("sessions.messages")
+                      : t("sessions.messageSingular")}
                   </span>
                   {r.model && (
                     <span className="sessions-tag sessions-tag--model">
@@ -291,14 +450,20 @@ function Sessions({
       ) : sessions.length === 0 ? (
         <div className="sessions-empty">
           <ChatBubble size={32} className="sessions-empty-icon" />
-          <p className="sessions-empty-text">{t("sessions.empty")}</p>
-          <p className="sessions-empty-hint">{t("sessions.emptyHint")}</p>
+          <p className="sessions-empty-text">
+            {loadError || t("sessions.empty")}
+          </p>
+          <p className="sessions-empty-hint">
+            {loadError ? t("sessions.loadFailedHint") : t("sessions.emptyHint")}
+          </p>
         </div>
       ) : (
         <div className="sessions-list">
           {grouped.map((group) => (
             <div key={group.label} className="sessions-group">
-              <div className="sessions-group-label">{t(`sessions.${group.label}`)}</div>
+              <div className="sessions-group-label">
+                {t(`sessions.${group.label}`)}
+              </div>
               {group.sessions.map((s) => (
                 <SessionCard
                   key={s.id}

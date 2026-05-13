@@ -258,7 +258,7 @@ interface HermesAPI {
       model: string;
     }>
   >;
-  syncSessionCache: () => Promise<
+  syncSessionCache: (limit?: number) => Promise<
     Array<{
       id: string;
       title: string;

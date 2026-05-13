@@ -11,6 +11,7 @@ files:
   - "!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}"
 asarUnpack:
   - resources/**
+  - node_modules/better-sqlite3/**
 win:
   executableName: hermes-agent
 nsis:
@@ -50,7 +51,8 @@ appImage:
   artifactName: ${name}-${version}.${ext}
 rpm:
   artifactName: ${name}-${version}.${ext}
-npmRebuild: false
+npmRebuild: true
+buildDependenciesFromSource: true
 publish:
   provider: github
   owner: fathah

@@ -216,7 +216,11 @@ export function getModelConfig(profile?: string): {
   baseUrl: string;
 } {
   const cacheKey = `mc:${profile || "default"}`;
-  const cached = getCached<{ provider: string; model: string; baseUrl: string }>(cacheKey);
+  const cached = getCached<{
+    provider: string;
+    model: string;
+    baseUrl: string;
+  }>(cacheKey);
   if (cached) return cached;
 
   const { configFile } = profilePaths(profile);
@@ -280,7 +284,7 @@ export function setModelConfig(
   content = lines.join("\n");
 
   // Enable streaming
-  const streamingRegex = /^(\s*streaming:\s*)(\S+)/m;
+  const streamingRegex = /^(\s*streaming:\s*)["']?[^"'\n#]*["']?/m;
   if (streamingRegex.test(content)) {
     content = content.replace(streamingRegex, "$1true");
   }
@@ -294,7 +298,13 @@ export function getHermesHome(profile?: string): string {
 
 // ── Platform enabled/disabled in config.yaml ────────────
 
-const SUPPORTED_PLATFORMS = ["telegram", "discord", "slack", "whatsapp", "signal"];
+const SUPPORTED_PLATFORMS = [
+  "telegram",
+  "discord",
+  "slack",
+  "whatsapp",
+  "signal",
+];
 
 export function getPlatformEnabled(profile?: string): Record<string, boolean> {
   const { configFile } = profilePaths(profile);

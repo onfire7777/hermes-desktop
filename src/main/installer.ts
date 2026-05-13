@@ -11,7 +11,10 @@ export const HERMES_HOME =
   process.env.HERMES_HOME?.trim() || join(homedir(), ".hermes");
 export const HERMES_REPO = join(HERMES_HOME, "hermes-agent");
 export const HERMES_VENV = join(HERMES_REPO, "venv");
-export const HERMES_PYTHON = join(HERMES_VENV, "bin", "python");
+export const HERMES_PYTHON =
+  process.platform === "win32"
+    ? join(HERMES_VENV, "Scripts", "python.exe")
+    : join(HERMES_VENV, "bin", "python");
 export const HERMES_SCRIPT = join(HERMES_REPO, "hermes");
 export const HERMES_ENV_FILE = join(HERMES_HOME, ".env");
 export const HERMES_CONFIG_FILE = join(HERMES_HOME, "config.yaml");
@@ -34,10 +37,30 @@ export interface InstallProgress {
 
 export function getEnhancedPath(): string {
   const home = homedir();
+  const windowsNodePaths =
+    process.platform === "win32"
+      ? [
+          process.env.APPDATA
+            ? join(process.env.APPDATA, "npm")
+            : join(home, "AppData", "Roaming", "npm"),
+          process.env.ProgramFiles
+            ? join(process.env.ProgramFiles, "nodejs")
+            : "C:\\Program Files\\nodejs",
+          process.env["ProgramFiles(x86)"]
+            ? join(process.env["ProgramFiles(x86)"], "nodejs")
+            : "C:\\Program Files (x86)\\nodejs",
+          process.env.LOCALAPPDATA
+            ? join(process.env.LOCALAPPDATA, "Programs", "nodejs")
+            : join(home, "AppData", "Local", "Programs", "nodejs"),
+          join(home, "AppData", "Local", "OpenAI", "Codex", "bin"),
+        ]
+      : [];
   const extra = [
     join(home, ".local", "bin"),
     join(home, ".cargo", "bin"),
     join(HERMES_VENV, "bin"),
+    join(HERMES_VENV, "Scripts"),
+    ...windowsNodePaths,
     // Node version manager shim directories
     join(home, ".volta", "bin"),
     join(home, ".asdf", "shims"),
@@ -48,7 +71,9 @@ export function getEnhancedPath(): string {
     "/opt/homebrew/bin",
     "/opt/homebrew/sbin",
   ];
-  return [...extra, process.env.PATH || ""].join(":");
+  return [...extra, process.env.PATH || ""].join(
+    process.platform === "win32" ? ";" : ":",
+  );
 }
 
 /** Resolve the active nvm node version's bin directory. */
@@ -183,6 +208,7 @@ export async function verifyInstall(): Promise<boolean> {
           HERMES_HOME,
         },
         timeout: 15000,
+        windowsHide: true,
       },
       (error) => {
         const ok = !error;
@@ -225,6 +251,7 @@ export async function getHermesVersion(): Promise<string | null> {
           HERMES_HOME,
         },
         timeout: 15000,
+        windowsHide: true,
       },
       (error, stdout) => {
         _versionFetching = false;
@@ -258,6 +285,7 @@ export function runHermesDoctor(): string {
       },
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 30000,
+      windowsHide: true,
     });
     return stripAnsi(output.toString());
   } catch (err) {
@@ -317,6 +345,7 @@ export async function runClawMigrate(
         TERM: "dumb",
       },
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
 
     proc.stdout?.on("data", (data: Buffer) => {
@@ -374,6 +403,7 @@ export async function runHermesUpdate(
         TERM: "dumb",
       },
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
 
     proc.stdout?.on("data", (data: Buffer) => {
@@ -411,6 +441,24 @@ function getShellProfile(home: string): string | null {
     if (existsSync(p)) return p;
   }
   return null;
+}
+
+function psSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function commandAvailable(command: string): boolean {
+  try {
+    execSync(
+      process.platform === "win32"
+        ? `where ${command}`
+        : `command -v ${command}`,
+      { stdio: "ignore", windowsHide: true },
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Parse install.sh output to detect progress stages
@@ -500,28 +548,57 @@ export async function runInstall(
   try {
     return await new Promise<void>((resolve, reject) => {
       const home = homedir();
-
-      // Source the user's shell profile to get the same PATH as their terminal,
-      // then run the official install script. Electron apps launched from Finder
-      // don't inherit the terminal environment.
-      const shellProfile = getShellProfile(home);
-      const installCmd = [
-        shellProfile ? `source "${shellProfile}" 2>/dev/null;` : "",
-        "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --skip-setup",
-      ].join(" ");
-
       const basePath = getEnhancedPath();
-      const proc = spawn("bash", ["-c", installCmd], {
-        cwd: home,
-        env: {
-          ...process.env,
-          PATH: askpass ? `${askpass.pathPrepend}:${basePath}` : basePath,
-          HOME: home,
-          TERM: "dumb",
-          ...(askpass?.env ?? {}),
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      let proc: ReturnType<typeof spawn>;
+
+      if (process.platform === "win32") {
+        const installCmd = [
+          "$ErrorActionPreference = 'Stop';",
+          `$script = Join-Path $env:TEMP 'hermes-install.ps1';`,
+          "Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1' -OutFile $script;",
+          `& $script -SkipSetup -HermesHome ${psSingleQuote(HERMES_HOME)} -InstallDir ${psSingleQuote(HERMES_REPO)};`,
+        ].join(" ");
+
+        const shell = commandAvailable("pwsh") ? "pwsh" : "powershell.exe";
+        proc = spawn(
+          shell,
+          ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", installCmd],
+          {
+            cwd: home,
+            env: {
+              ...process.env,
+              PATH: basePath,
+              USERPROFILE: home,
+              HERMES_HOME,
+              TERM: "dumb",
+            },
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: true,
+          },
+        );
+      } else {
+        // Source the user's shell profile to get the same PATH as their terminal,
+        // then run the official install script. Electron apps launched from Finder
+        // don't inherit the terminal environment.
+        const shellProfile = getShellProfile(home);
+        const installCmd = [
+          shellProfile ? `source "${shellProfile}" 2>/dev/null;` : "",
+          "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --skip-setup",
+        ].join(" ");
+
+        proc = spawn("bash", ["-c", installCmd], {
+          cwd: home,
+          env: {
+            ...process.env,
+            PATH: askpass ? `${askpass.pathPrepend}:${basePath}` : basePath,
+            HOME: home,
+            TERM: "dumb",
+            ...(askpass?.env ?? {}),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+        });
+      }
 
       proc.stdout?.on("data", (data: Buffer) => {
         emit(stripAnsi(data.toString()));
@@ -590,6 +667,7 @@ export async function runHermesBackup(
           TERM: "dumb",
         },
         timeout: 120000,
+        windowsHide: true,
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -637,6 +715,7 @@ export async function runHermesImport(
           TERM: "dumb",
         },
         timeout: 120000,
+        windowsHide: true,
       },
       (error, _stdout, stderr) => {
         if (error) {
@@ -674,6 +753,7 @@ export function runHermesDump(): Promise<string> {
           TERM: "dumb",
         },
         timeout: 30000,
+        windowsHide: true,
       },
       (error, stdout, stderr) => {
         if (error) {

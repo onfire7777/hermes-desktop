@@ -108,14 +108,19 @@ export async function listProfiles(): Promise<ProfileInfo[]> {
   const profiles: ProfileInfo[] = [];
 
   // Default profile is HERMES_HOME itself
-  const [defaultConfig, defaultHasEnv, defaultHasSoul, defaultSkills, defaultGw] =
-    await Promise.all([
-      readProfileConfig(HERMES_HOME),
-      fileExists(join(HERMES_HOME, ".env")),
-      fileExists(join(HERMES_HOME, "SOUL.md")),
-      countSkills(HERMES_HOME),
-      isGatewayRunning(HERMES_HOME),
-    ]);
+  const [
+    defaultConfig,
+    defaultHasEnv,
+    defaultHasSoul,
+    defaultSkills,
+    defaultGw,
+  ] = await Promise.all([
+    readProfileConfig(HERMES_HOME),
+    fileExists(join(HERMES_HOME, ".env")),
+    fileExists(join(HERMES_HOME, "SOUL.md")),
+    countSkills(HERMES_HOME),
+    isGatewayRunning(HERMES_HOME),
+  ]);
 
   profiles.push({
     name: "default",
@@ -199,6 +204,7 @@ export function createProfile(
       },
       stdio: "pipe",
       timeout: 15000,
+      windowsHide: true,
     });
     return { success: true };
   } catch (err) {
@@ -228,6 +234,7 @@ export function deleteProfile(name: string): {
         },
         stdio: "pipe",
         timeout: 15000,
+        windowsHide: true,
       },
     );
     return { success: true };
@@ -250,6 +257,7 @@ export function setActiveProfile(name: string): void {
       },
       stdio: "pipe",
       timeout: 10000,
+      windowsHide: true,
     });
   } catch {
     // ignore

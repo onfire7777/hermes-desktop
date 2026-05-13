@@ -1,11 +1,13 @@
 import { existsSync, readFileSync, statSync } from "fs";
 import { join } from "path";
+import { execFileSync } from "child_process";
 import Database from "better-sqlite3";
 import { profileHome, safeWriteFile } from "./utils";
+import { HERMES_PYTHON } from "./installer";
 
 const ENTRY_DELIMITER = "\n§\n";
-const MEMORY_CHAR_LIMIT = 2200;
-const USER_CHAR_LIMIT = 1375;
+const MEMORY_CHAR_LIMIT = 6000;
+const USER_CHAR_LIMIT = 3000;
 
 export interface MemoryEntry {
   index: number;
@@ -99,8 +101,46 @@ function getSessionStats(profile?: string): {
     } finally {
       db.close();
     }
-  } catch (err) {
-    console.error("[memory] getSessionStats failed:", err);
+  } catch {
+    return getSessionStatsFallback(dbPath);
+  }
+}
+
+function getSessionStatsFallback(dbPath: string): {
+  totalSessions: number;
+  totalMessages: number;
+} {
+  const python = existsSync(HERMES_PYTHON) ? HERMES_PYTHON : "python";
+  const script = String.raw`
+import json
+import sqlite3
+import sys
+
+db_path = sys.argv[1]
+con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+try:
+    sessions = con.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    messages = con.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    print(json.dumps({"totalSessions": sessions, "totalMessages": messages}))
+finally:
+    con.close()
+`;
+
+  try {
+    const output = execFileSync(python, ["-c", script, dbPath], {
+      encoding: "utf-8",
+      timeout: 5000,
+      windowsHide: true,
+    });
+    const parsed = JSON.parse(output) as {
+      totalSessions?: number;
+      totalMessages?: number;
+    };
+    return {
+      totalSessions: parsed.totalSessions ?? 0,
+      totalMessages: parsed.totalMessages ?? 0,
+    };
+  } catch {
     return { totalSessions: 0, totalMessages: 0 };
   }
 }

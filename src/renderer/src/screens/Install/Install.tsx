@@ -48,7 +48,7 @@ function Install({ onComplete, onFailed }: InstallProps): React.JSX.Element {
       });
 
     return cleanup;
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (logRef.current) {

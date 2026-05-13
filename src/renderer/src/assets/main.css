@@ -27,6 +27,7 @@
   --error-bg: rgba(239, 68, 68, 0.1);
   --warning: #f59e0b;
   --warning-bg: rgba(245, 158, 11, 0.1);
+  --warning-border: rgba(245, 158, 11, 0.35);
   --user-bubble: #003f7a;
   --user-bubble-text: #ffffff;
   --agent-bubble: #2f2f2f;
@@ -61,6 +62,7 @@
   --error-bg: rgba(220, 38, 38, 0.06);
   --warning: #d97706;
   --warning-bg: rgba(217, 119, 6, 0.08);
+  --warning-border: rgba(217, 119, 6, 0.3);
   --user-bubble: #003f7a;
   --user-bubble-text: #ffffff;
   --agent-bubble: #f0f0f0;
@@ -2617,6 +2619,17 @@ body {
 .sessions-empty-hint {
   font-size: 13px;
   color: var(--text-muted);
+}
+
+.sessions-error {
+  margin: 0 16px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-md);
+  background: var(--warning-bg);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 /* Sessions list */
