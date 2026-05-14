@@ -33,13 +33,18 @@ function normalizeJob(job: Record<string, unknown>): CronJob | null {
   let state: CronJob["state"] = "active";
   if (job.state === "paused" || !enabled) state = "paused";
   else if (job.state === "completed") state = "completed";
-  const schedule = job.schedule as { value?: string } | string | undefined;
+  const schedule = job.schedule as
+    | { value?: string; display?: string }
+    | string
+    | undefined;
   return {
     id: String(job.id),
     name: (job.name as string) || "(unnamed)",
     schedule:
       (job.schedule_display as string) ||
-      (typeof schedule === "object" ? schedule?.value : schedule) ||
+      (typeof schedule === "object"
+        ? schedule?.value || schedule?.display
+        : schedule) ||
       "?",
     prompt: (job.prompt as string) || "",
     state,
@@ -200,14 +205,10 @@ export async function createCronJob(
     }
   }
 
-  // Use -- to prevent prompt from being parsed as a flag
   const args = ["create", schedule];
+  if (prompt) args.push(prompt);
   if (name) args.push("--name", name);
   if (deliver) args.push("--deliver", deliver);
-  if (prompt) {
-    args.push("--");
-    args.push(prompt);
-  }
 
   const result = await runCronCommand(args, profile);
   return { success: result.success, error: result.error };

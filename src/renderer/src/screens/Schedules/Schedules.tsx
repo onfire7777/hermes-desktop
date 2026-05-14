@@ -148,8 +148,12 @@ function Schedules({ profile }: SchedulesProps): React.JSX.Element {
     return true;
   }
 
+  function isCreateValid(): boolean {
+    return isScheduleValid() && newPrompt.trim().length > 0;
+  }
+
   async function handleCreate(): Promise<void> {
-    if (!isScheduleValid()) return;
+    if (!isCreateValid()) return;
     setActionInProgress("creating");
     setError("");
     try {
@@ -417,7 +421,8 @@ function Schedules({ profile }: SchedulesProps): React.JSX.Element {
               )}
               <div className="schedules-field">
                 <label className="schedules-field-label">
-                  {t("schedules.prompt")}
+                  {t("schedules.prompt")}{" "}
+                  <span className="schedules-required">*</span>
                 </label>
                 <textarea
                   className="input schedules-textarea"
@@ -425,6 +430,7 @@ function Schedules({ profile }: SchedulesProps): React.JSX.Element {
                   value={newPrompt}
                   onChange={(e) => setNewPrompt(e.target.value)}
                   rows={3}
+                  required
                 />
               </div>
               <div className="schedules-field">
@@ -454,7 +460,7 @@ function Schedules({ profile }: SchedulesProps): React.JSX.Element {
               <button
                 className="btn btn-primary"
                 onClick={handleCreate}
-                disabled={!isScheduleValid() || actionInProgress === "creating"}
+                disabled={!isCreateValid() || actionInProgress === "creating"}
               >
                 {actionInProgress === "creating"
                   ? t("schedules.creating")
