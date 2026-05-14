@@ -34,7 +34,7 @@ import {
   sendMessage,
   startGateway,
   stopGateway,
-  isGatewayRunning,
+  getGatewayStatus,
   testRemoteConnection,
   stopHealthPolling,
   restartGateway,
@@ -191,7 +191,7 @@ async function ensureLocalGatewayForOffice(): Promise<void> {
 
   if (await testRemoteConnection("http://127.0.0.1:8642")) return;
 
-  if (!isGatewayRunning()) {
+  if (!(await getGatewayStatus())) {
     try {
       startGateway();
     } catch (err) {
@@ -414,10 +414,14 @@ function setupIPC(): void {
       }
       setEnvValue(key, value, profile);
       // Restart gateway so it picks up the new API key
-      if (
-        (isGatewayRunning() && key.endsWith("_API_KEY")) ||
+      const shouldRestartGateway =
+        key.endsWith("_API_KEY") ||
         key.endsWith("_TOKEN") ||
-        key === "HF_TOKEN"
+        key === "HF_TOKEN";
+      if (
+        conn.mode === "local" &&
+        shouldRestartGateway &&
+        (await getGatewayStatus())
       ) {
         restartGateway(profile);
       }
@@ -488,7 +492,8 @@ function setupIPC(): void {
 
       // Restart gateway when provider, model, or endpoint changes so it picks up new config
       if (
-        isGatewayRunning() &&
+        conn.mode === "local" &&
+        (await getGatewayStatus()) &&
         (prev.provider !== provider ||
           prev.model !== model ||
           prev.baseUrl !== baseUrl)
@@ -600,7 +605,7 @@ function setupIPC(): void {
       resumeSessionId?: string,
       history?: Array<{ role: string; content: string }>,
     ) => {
-      if (!isRemoteMode() && !isGatewayRunning()) {
+      if (!isRemoteMode() && !(await getGatewayStatus())) {
         startGateway(profile);
       }
 
@@ -703,6 +708,7 @@ function setupIPC(): void {
       await sshStartGateway(conn.ssh);
       return true;
     }
+    if (await getGatewayStatus()) return true;
     return startGateway();
   });
   ipcMain.handle("stop-gateway", async () => {
@@ -714,10 +720,10 @@ function setupIPC(): void {
     stopGateway(true);
     return true;
   });
-  ipcMain.handle("gateway-status", () => {
+  ipcMain.handle("gateway-status", async () => {
     const conn = getConnectionConfig();
     if (conn.mode === "ssh" && conn.ssh) return sshGatewayStatus(conn.ssh);
-    return isGatewayRunning();
+    return getGatewayStatus();
   });
 
   // Platform toggles (config.yaml platforms section)
@@ -737,7 +743,7 @@ function setupIPC(): void {
       }
       setPlatformEnabled(platform, enabled, profile);
       // Restart gateway so it picks up the new platform config
-      if (isGatewayRunning()) {
+      if (conn.mode === "local" && (await getGatewayStatus())) {
         restartGateway(profile);
       }
       return true;

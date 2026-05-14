@@ -59,4 +59,22 @@ describe("Windows child process launch hygiene", () => {
     expect(claw3dSource).toContain("HERMES_API_KEY: apiKey");
     expect(claw3dSource).toContain("API_SERVER_KEY");
   });
+
+  it("reports externally managed Hermes gateways as running", () => {
+    const hermesSource = readFileSync(
+      join(process.cwd(), "src", "main", "hermes.ts"),
+      "utf-8",
+    );
+    const indexSource = readFileSync(
+      join(process.cwd(), "src", "main", "index.ts"),
+      "utf-8",
+    );
+
+    expect(hermesSource).toContain("export async function getGatewayStatus");
+    expect(hermesSource).toContain("const ready = await isApiServerReady()");
+    expect(indexSource).toMatch(/ipcMain\.handle\("gateway-status", async/);
+    expect(indexSource).toContain("return getGatewayStatus();");
+    expect(indexSource).toContain("if (await getGatewayStatus()) return true;");
+    expect(indexSource).toContain("if (!(await getGatewayStatus()))");
+  });
 });

@@ -122,7 +122,7 @@ interface ChatHandle {
 //  API Server health check
 // ────────────────────────────────────────────────────
 
-function isApiServerReady(): Promise<boolean> {
+export function isApiServerReady(): Promise<boolean> {
   return new Promise((resolve) => {
     const url = `${getApiUrl()}/health`;
     const mod = url.startsWith("https") ? https : http;
@@ -753,7 +753,7 @@ let gatewayStartedByApp = false;
 
 export function startGateway(profile?: string): boolean {
   ensureInitialized();
-  if (isGatewayRunning()) return false;
+  if (isGatewayRunning()) return true;
 
   // Build gateway env with profile API keys
   const gatewayEnv: Record<string, string> = {
@@ -855,6 +855,13 @@ export function isGatewayRunning(): boolean {
   } catch {
     return false;
   }
+}
+
+export async function getGatewayStatus(): Promise<boolean> {
+  if (isGatewayRunning()) return true;
+  const ready = await isApiServerReady();
+  apiServerAvailable = ready;
+  return ready;
 }
 
 export function isApiReady(): boolean {
