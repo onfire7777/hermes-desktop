@@ -5,13 +5,14 @@ import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
 // `vi.hoisted` runs before module imports, so we can't reference imported
 // `join` / `tmpdir` here — use the bare Node modules via require, which is
 // the documented escape hatch for hoisted setup.
-const { TEST_HOME } = vi.hoisted(() => {
+const { TEST_HOME, getGatewayStatusMock } = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const path = require("path");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const os = require("os");
   return {
     TEST_HOME: path.join(os.tmpdir(), `hermes-profiles-test-${Date.now()}`),
+    getGatewayStatusMock: vi.fn(),
   };
 });
 
@@ -25,6 +26,10 @@ vi.mock("../src/main/installer", () => ({
   getEnhancedPath: () => process.env.PATH || "",
 }));
 
+vi.mock("../src/main/hermes", () => ({
+  getGatewayStatus: getGatewayStatusMock,
+}));
+
 // Import AFTER the mock so PROFILES_DIR is resolved against TEST_HOME.
 import {
   createProfile,
@@ -36,6 +41,7 @@ import {
 const PROFILES_DIR = join(TEST_HOME, "profiles");
 
 beforeEach(() => {
+  getGatewayStatusMock.mockResolvedValue(false);
   mkdirSync(TEST_HOME, { recursive: true });
   mkdirSync(PROFILES_DIR, { recursive: true });
 });
@@ -130,6 +136,16 @@ describe("listProfiles", () => {
     const def = profiles.find((p) => p.isDefault);
     expect(work?.isActive).toBe(true);
     expect(def?.isActive).toBe(false);
+  });
+
+  it("uses the robust gateway status check for the default profile when gateway.pid is stale or missing", async () => {
+    getGatewayStatusMock.mockResolvedValue(true);
+
+    const profiles = await listProfiles();
+    const def = profiles.find((p) => p.isDefault);
+
+    expect(def?.gatewayRunning).toBe(true);
+    expect(getGatewayStatusMock).toHaveBeenCalled();
   });
 
   it("rejects invalid profile names before invoking the Hermes CLI", () => {

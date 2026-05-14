@@ -14,6 +14,7 @@ import {
   isValidProfileName,
   PROFILE_NAME_ERROR,
 } from "./utils";
+import { getGatewayStatus } from "./hermes";
 
 const PROFILES_DIR = join(HERMES_HOME, "profiles");
 
@@ -89,6 +90,15 @@ async function isGatewayRunning(profilePath: string): Promise<boolean> {
   }
 }
 
+async function isDefaultGatewayRunning(): Promise<boolean> {
+  if (await isGatewayRunning(HERMES_HOME)) return true;
+  try {
+    return await getGatewayStatus();
+  } catch {
+    return false;
+  }
+}
+
 async function getActiveProfileName(): Promise<string> {
   const activeFile = join(HERMES_HOME, "active_profile");
   try {
@@ -124,7 +134,7 @@ export async function listProfiles(): Promise<ProfileInfo[]> {
     fileExists(join(HERMES_HOME, ".env")),
     fileExists(join(HERMES_HOME, "SOUL.md")),
     countSkills(HERMES_HOME),
-    isGatewayRunning(HERMES_HOME),
+    isDefaultGatewayRunning(),
   ]);
 
   profiles.push({
