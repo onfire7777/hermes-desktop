@@ -1,4 +1,4 @@
-import { spawn, ChildProcess, execSync } from "child_process";
+import { spawn, ChildProcess, execSync, spawnSync } from "child_process";
 import {
   existsSync,
   readFileSync,
@@ -6,7 +6,7 @@ import {
   unlinkSync,
   mkdirSync,
 } from "fs";
-import { dirname, join } from "path";
+import { join } from "path";
 import { homedir } from "os";
 import { createConnection } from "net";
 import { request } from "http";
@@ -35,6 +35,109 @@ let devServerLogs = "";
 let adapterLogs = "";
 let devServerError = "";
 let adapterError = "";
+
+export interface ResolvedCommand {
+  command: string;
+  windowsScript: boolean;
+}
+
+interface CommandInvocation {
+  command: string;
+  args: string[];
+  windowsVerbatimArguments?: boolean;
+}
+
+export function isWindowsCommandScript(command: string): boolean {
+  return /\.(cmd|bat)$/i.test(command);
+}
+
+export function pickWindowsCommandCandidate(
+  candidates: string[],
+): ResolvedCommand | null {
+  const normalized = candidates
+    .map((candidate) => candidate.trim())
+    .filter(Boolean);
+  const executable = normalized.find((candidate) => /\.exe$/i.test(candidate));
+  if (executable) {
+    return { command: executable, windowsScript: false };
+  }
+
+  const script = normalized.find(isWindowsCommandScript);
+  if (script) {
+    return { command: script, windowsScript: true };
+  }
+
+  const fallback = normalized[0];
+  return fallback ? { command: fallback, windowsScript: false } : null;
+}
+
+function resolveCommandOnPath(
+  command: string,
+  envPath: string,
+): ResolvedCommand | null {
+  const lookupCommand = process.platform === "win32" ? "where.exe" : "which";
+  const result = spawnSync(lookupCommand, [command], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: envPath },
+    timeout: 5000,
+    windowsHide: true,
+  });
+
+  if (result.error || result.status !== 0 || !result.stdout) return null;
+
+  const candidates = result.stdout.split(/\r?\n/);
+  if (process.platform === "win32") {
+    return pickWindowsCommandCandidate(candidates);
+  }
+
+  const resolved = candidates
+    .map((candidate) => candidate.trim())
+    .find(Boolean);
+  return resolved ? { command: resolved, windowsScript: false } : null;
+}
+
+function resolveCommand(command: string, envPath: string): ResolvedCommand {
+  const resolved = resolveCommandOnPath(command, envPath);
+  if (resolved) return resolved;
+
+  return {
+    command,
+    windowsScript:
+      process.platform === "win32" && isWindowsCommandScript(command),
+  };
+}
+
+function quoteWindowsCmdArg(value: string): string {
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+export function buildWindowsScriptCommandLine(
+  command: string,
+  args: string[],
+): string {
+  const parts = [quoteWindowsCmdArg(command), ...args.map(quoteWindowsCmdArg)];
+  return `"${parts.join(" ")}"`;
+}
+
+function createCommandInvocation(
+  resolved: ResolvedCommand,
+  args: string[],
+): CommandInvocation {
+  if (resolved.windowsScript) {
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      args: [
+        "/d",
+        "/s",
+        "/c",
+        buildWindowsScriptCommandLine(resolved.command, args),
+      ],
+      windowsVerbatimArguments: true,
+    };
+  }
+
+  return { command: resolved.command, args };
+}
 
 function getSavedPort(): number {
   try {
@@ -507,38 +610,39 @@ export async function getClaw3dStatus(): Promise<Claw3dStatus> {
   };
 }
 
-let _cachedNpmPath: string | null = null;
-let _cachedNpmCommand: { command: string; argsPrefix: string[] } | null = null;
+let _cachedNpmCommand: ResolvedCommand | null = null;
+let _cachedNodeCommand: ResolvedCommand | null = null;
 
-function commandNames(name: "node" | "npm"): string[] {
-  if (process.platform !== "win32") return [name];
-  return name === "npm" ? ["npm.cmd", "npm.exe", "npm"] : ["node.exe", "node"];
-}
-
-function pathDelimiter(): string {
-  return process.platform === "win32" ? ";" : ":";
-}
-
-function resolveFromPath(name: "node" | "npm"): string | null {
-  const dirs = getEnhancedPath()
-    .split(pathDelimiter())
-    .map((p) => p.trim())
-    .filter(Boolean);
-
-  for (const dir of dirs) {
-    for (const cmd of commandNames(name)) {
-      const candidate = join(dir, cmd);
-      if (existsSync(candidate)) return candidate;
-    }
+function resolveExistingCommand(
+  candidates: (string | undefined)[],
+): ResolvedCommand | null {
+  for (const candidate of candidates) {
+    if (!candidate || !existsSync(candidate)) continue;
+    return {
+      command: candidate,
+      windowsScript:
+        process.platform === "win32" && isWindowsCommandScript(candidate),
+    };
   }
   return null;
 }
 
-function findNode(): string | null {
+function findNode(envPath = getEnhancedPath()): ResolvedCommand {
+  if (_cachedNodeCommand) return _cachedNodeCommand;
+
   const home = homedir();
+  const resolvedOnPath = resolveCommandOnPath("node", envPath);
+  if (resolvedOnPath) {
+    _cachedNodeCommand = resolvedOnPath;
+    return resolvedOnPath;
+  }
+
   const candidates =
     process.platform === "win32"
       ? [
+          process.env.NVM_SYMLINK
+            ? join(process.env.NVM_SYMLINK, "node.exe")
+            : undefined,
           process.env.ProgramFiles
             ? join(process.env.ProgramFiles, "nodejs", "node.exe")
             : "C:\\Program Files\\nodejs\\node.exe",
@@ -548,64 +652,74 @@ function findNode(): string | null {
           process.env.LOCALAPPDATA
             ? join(process.env.LOCALAPPDATA, "Programs", "nodejs", "node.exe")
             : join(home, "AppData", "Local", "Programs", "nodejs", "node.exe"),
+          join(home, ".volta", "bin", "node.exe"),
+          join(
+            home,
+            ".local",
+            "share",
+            "fnm",
+            "aliases",
+            "default",
+            "bin",
+            "node.exe",
+          ),
+          join(home, ".fnm", "aliases", "default", "bin", "node.exe"),
           join(home, "AppData", "Local", "OpenAI", "Codex", "bin", "node.exe"),
         ]
-      : ["/usr/local/bin/node", "/opt/homebrew/bin/node"];
+      : [
+          join(home, ".volta", "bin", "node"),
+          join(home, ".asdf", "shims", "node"),
+          join(
+            home,
+            ".local",
+            "share",
+            "fnm",
+            "aliases",
+            "default",
+            "bin",
+            "node",
+          ),
+          join(home, ".fnm", "aliases", "default", "bin", "node"),
+          "/usr/local/bin/node",
+          "/opt/homebrew/bin/node",
+        ];
 
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return resolveFromPath("node");
+  _cachedNodeCommand =
+    resolveExistingCommand(candidates) || resolveCommand("node", envPath);
+  return _cachedNodeCommand;
 }
 
-function findNpmCli(npmPath: string): string | null {
-  const candidates = [
-    join(dirname(npmPath), "node_modules", "npm", "bin", "npm-cli.js"),
-  ];
-
-  if (process.platform === "win32") {
-    if (process.env.ProgramFiles) {
-      candidates.push(
-        join(
-          process.env.ProgramFiles,
-          "nodejs",
-          "node_modules",
-          "npm",
-          "bin",
-          "npm-cli.js",
-        ),
-      );
-    }
-    if (process.env["ProgramFiles(x86)"]) {
-      candidates.push(
-        join(
-          process.env["ProgramFiles(x86)"],
-          "nodejs",
-          "node_modules",
-          "npm",
-          "bin",
-          "npm-cli.js",
-        ),
-      );
-    }
-  }
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
-}
-
-function findNpm(): string {
-  if (_cachedNpmPath) return _cachedNpmPath;
+function findNpm(envPath = getEnhancedPath()): ResolvedCommand {
+  if (_cachedNpmCommand) return _cachedNpmCommand;
 
   const home = homedir();
 
-  // Try common locations first (no process spawn).
-  // Includes nvm, volta, fnm, and system paths.
-  const candidates =
-    process.platform === "win32"
+  if (process.platform === "win32") {
+    const resolved = resolveCommandOnPath("npm", envPath);
+    if (resolved) {
+      _cachedNpmCommand = resolved;
+      return resolved;
+    }
+  }
+
+  // Try common locations first (no process spawn). Includes nvm,
+  // nvm-windows, volta, asdf, fnm, and system paths.
+  const candidates = [
+    ...(process.platform === "win32"
       ? [
+          process.env.NVM_SYMLINK
+            ? join(process.env.NVM_SYMLINK, "npm.cmd")
+            : undefined,
+          join(home, "AppData", "Roaming", "npm", "npm.cmd"),
+          process.env.ProgramFiles
+            ? join(process.env.ProgramFiles, "nodejs", "npm.cmd")
+            : undefined,
+          process.env["ProgramFiles(x86)"]
+            ? join(process.env["ProgramFiles(x86)"], "nodejs", "npm.cmd")
+            : undefined,
+          process.env.LOCALAPPDATA
+            ? join(process.env.LOCALAPPDATA, "Programs", "nodejs", "npm.cmd")
+            : join(home, "AppData", "Local", "Programs", "nodejs", "npm.cmd"),
           join(home, ".volta", "bin", "npm.cmd"),
           join(home, ".volta", "bin", "npm.exe"),
           join(home, ".asdf", "shims", "npm.cmd"),
@@ -620,36 +734,15 @@ function findNpm(): string {
             "npm.cmd",
           ),
           join(home, ".fnm", "aliases", "default", "bin", "npm.cmd"),
-          process.env.APPDATA
-            ? join(process.env.APPDATA, "npm", "npm.cmd")
-            : join(home, "AppData", "Roaming", "npm", "npm.cmd"),
-          process.env.ProgramFiles
-            ? join(process.env.ProgramFiles, "nodejs", "npm.cmd")
-            : "C:\\Program Files\\nodejs\\npm.cmd",
-          process.env["ProgramFiles(x86)"]
-            ? join(process.env["ProgramFiles(x86)"], "nodejs", "npm.cmd")
-            : "C:\\Program Files (x86)\\nodejs\\npm.cmd",
-          process.env.LOCALAPPDATA
-            ? join(process.env.LOCALAPPDATA, "Programs", "nodejs", "npm.cmd")
-            : join(home, "AppData", "Local", "Programs", "nodejs", "npm.cmd"),
         ]
-      : [
-          join(home, ".volta", "bin", "npm"),
-          join(home, ".asdf", "shims", "npm"),
-          join(
-            home,
-            ".local",
-            "share",
-            "fnm",
-            "aliases",
-            "default",
-            "bin",
-            "npm",
-          ),
-          join(home, ".fnm", "aliases", "default", "bin", "npm"),
-          "/usr/local/bin/npm",
-          "/opt/homebrew/bin/npm",
-        ];
+      : []),
+    join(home, ".volta", "bin", "npm"),
+    join(home, ".asdf", "shims", "npm"),
+    join(home, ".local", "share", "fnm", "aliases", "default", "bin", "npm"),
+    join(home, ".fnm", "aliases", "default", "bin", "npm"),
+    "/usr/local/bin/npm",
+    "/opt/homebrew/bin/npm",
+  ].filter((candidate): candidate is string => Boolean(candidate));
 
   // Discover nvm npm dynamically (active version)
   const nvmDir = process.env.NVM_DIR || join(home, ".nvm");
@@ -675,81 +768,43 @@ function findNpm(): string {
     }
   }
 
-  const pathNpm = resolveFromPath("npm");
-  if (pathNpm) candidates.unshift(pathNpm);
-
   for (const c of candidates) {
     if (existsSync(c)) {
-      _cachedNpmPath = c;
-      return c;
-    }
-  }
-
-  // Fallback: which/where (blocks main thread — only runs once)
-  try {
-    const npmPath = execSync(
-      process.platform === "win32" ? "where npm" : "which npm",
-      {
-        env: { ...process.env, PATH: getEnhancedPath() },
-        timeout: 5000,
-        windowsHide: true,
-      },
-    )
-      .toString()
-      .trim()
-      .split(/\r?\n/)
-      .find((line) =>
-        process.platform === "win32"
-          ? line.trim().toLowerCase().endsWith("npm.cmd")
-          : Boolean(line.trim()),
-      );
-    if (npmPath && existsSync(npmPath)) {
-      _cachedNpmPath = npmPath;
-      return npmPath;
-    }
-  } catch {
-    /* fall through */
-  }
-
-  _cachedNpmPath = "npm";
-  return "npm";
-}
-
-function findNpmCommand(): { command: string; argsPrefix: string[] } {
-  if (_cachedNpmCommand) return _cachedNpmCommand;
-
-  const npm = findNpm();
-  if (process.platform === "win32") {
-    const node = findNode();
-    const npmCli = findNpmCli(npm);
-    if (node && npmCli) {
-      _cachedNpmCommand = { command: node, argsPrefix: [npmCli] };
+      _cachedNpmCommand = {
+        command: c,
+        windowsScript:
+          process.platform === "win32" && isWindowsCommandScript(c),
+      };
       return _cachedNpmCommand;
     }
   }
 
-  _cachedNpmCommand = { command: npm, argsPrefix: [] };
-  return _cachedNpmCommand;
-}
+  // Fallback path lookup only runs once because the result is cached.
+  if (process.platform !== "win32") {
+    const resolved = resolveCommandOnPath("npm", envPath);
+    if (resolved) {
+      _cachedNpmCommand = resolved;
+      return resolved;
+    }
+  }
 
-function spawnNpm(
-  args: string[],
-  options: Parameters<typeof spawn>[2],
-): ChildProcess {
-  const npm = findNpmCommand();
-  return spawn(npm.command, [...npm.argsPrefix, ...args], {
-    ...options,
-    windowsHide: true,
-  });
+  _cachedNpmCommand = resolveCommand("npm", envPath);
+  return _cachedNpmCommand;
 }
 
 function spawnNode(
   args: string[],
   options: Parameters<typeof spawn>[2],
 ): ChildProcess {
-  return spawn(findNode() || "node", args, {
+  const envPath =
+    options?.env && typeof options.env.PATH === "string"
+      ? options.env.PATH
+      : getEnhancedPath();
+  const invocation = createCommandInvocation(findNode(envPath), args);
+  return spawn(invocation.command, invocation.args, {
     ...options,
     windowsHide: true,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
 }
 
@@ -776,6 +831,7 @@ export async function setupClaw3d(
     HOME: homedir(),
     TERM: "dumb",
   };
+  const git = resolveCommand("git", env.PATH);
 
   // Step 1: Clone (or pull if already cloned)
   const cloned = existsSync(join(HERMES_OFFICE_DIR, "package.json"));
@@ -783,16 +839,18 @@ export async function setupClaw3d(
   if (!cloned) {
     emit(1, "Cloning Claw3D repository...", "Cloning from GitHub...\n");
     await new Promise<void>((resolve, reject) => {
-      const proc = spawn(
-        "git",
-        ["clone", HERMES_OFFICE_REPO, HERMES_OFFICE_DIR],
-        {
-          cwd: homedir(),
-          env,
-          stdio: ["ignore", "pipe", "pipe"],
-          windowsHide: true,
-        },
-      );
+      const gitClone = createCommandInvocation(git, [
+        "clone",
+        HERMES_OFFICE_REPO,
+        HERMES_OFFICE_DIR,
+      ]);
+      const proc = spawn(gitClone.command, gitClone.args, {
+        cwd: homedir(),
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        windowsVerbatimArguments: gitClone.windowsVerbatimArguments,
+      });
 
       proc.stdout?.on("data", (data: Buffer) => {
         emit(1, "Cloning Claw3D repository...", stripAnsi(data.toString()));
@@ -820,11 +878,13 @@ export async function setupClaw3d(
       "Repository already exists, pulling latest...\n",
     );
     await new Promise<void>((resolve) => {
-      const proc = spawn("git", ["pull", "--ff-only"], {
+      const gitPull = createCommandInvocation(git, ["pull", "--ff-only"]);
+      const proc = spawn(gitPull.command, gitPull.args, {
         cwd: HERMES_OFFICE_DIR,
         env,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
+        windowsVerbatimArguments: gitPull.windowsVerbatimArguments,
       });
 
       proc.stdout?.on("data", (data: Buffer) => {
@@ -844,12 +904,15 @@ export async function setupClaw3d(
 
   // Step 2: npm install
   emit(2, "Installing dependencies...", "Running npm install...\n");
+  const npm = createCommandInvocation(findNpm(env.PATH), ["install"]);
 
   await new Promise<void>((resolve, reject) => {
-    const proc = spawnNpm(["install"], {
+    const proc = spawn(npm.command, npm.args, {
       cwd: HERMES_OFFICE_DIR,
       env,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      windowsVerbatimArguments: npm.windowsVerbatimArguments,
     });
 
     proc.stdout?.on("data", (data: Buffer) => {
@@ -882,12 +945,15 @@ export async function setupClaw3d(
 
   // Step 3: production build
   emit(3, "Building Claw3D...", "Running npm run build...\n");
+  const npmBuild = createCommandInvocation(findNpm(env.PATH), ["run", "build"]);
 
   await new Promise<void>((resolve, reject) => {
-    const proc = spawnNpm(["run", "build"], {
+    const proc = spawn(npmBuild.command, npmBuild.args, {
       cwd: HERMES_OFFICE_DIR,
       env,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      windowsVerbatimArguments: npmBuild.windowsVerbatimArguments,
     });
 
     proc.stdout?.on("data", (data: Buffer) => {
@@ -959,28 +1025,29 @@ export function startDevServer(): boolean {
   const port = getSavedPort();
   const wsUrl = getSavedWsUrl();
   const script = hasProductionBuild() ? "start" : "dev";
+  const env = {
+    ...process.env,
+    PATH: getEnhancedPath(),
+    HOME: homedir(),
+    TERM: "dumb",
+    PORT: String(port),
+    HOST: "127.0.0.1",
+    NEXT_PUBLIC_GATEWAY_URL: wsUrl,
+    CLAW3D_GATEWAY_URL: wsUrl,
+    CLAW3D_GATEWAY_TOKEN: "",
+    CLAW3D_GATEWAY_ADAPTER_TYPE: "hermes",
+    UPSTREAM_ALLOWLIST: "localhost,127.0.0.1",
+    HERMES_ADAPTER_PORT: String(DEFAULT_ADAPTER_PORT),
+    HERMES_MODEL: "hermes",
+    HERMES_AGENT_NAME: "Hermes",
+    HERMES_HOME: join(homedir(), ".hermes"),
+    OPENCLAW_STATE_DIR: join(homedir(), ".openclaw"),
+  };
   const proc = spawnNode(
     ["server/index.js", ...(script === "dev" ? ["--dev"] : [])],
     {
       cwd: HERMES_OFFICE_DIR,
-      env: {
-        ...process.env,
-        PATH: getEnhancedPath(),
-        HOME: homedir(),
-        TERM: "dumb",
-        PORT: String(port),
-        HOST: "127.0.0.1",
-        NEXT_PUBLIC_GATEWAY_URL: wsUrl,
-        CLAW3D_GATEWAY_URL: wsUrl,
-        CLAW3D_GATEWAY_TOKEN: "",
-        CLAW3D_GATEWAY_ADAPTER_TYPE: "hermes",
-        UPSTREAM_ALLOWLIST: "localhost,127.0.0.1",
-        HERMES_ADAPTER_PORT: String(DEFAULT_ADAPTER_PORT),
-        HERMES_MODEL: "hermes",
-        HERMES_AGENT_NAME: "Hermes",
-        HERMES_HOME: join(homedir(), ".hermes"),
-        OPENCLAW_STATE_DIR: join(homedir(), ".openclaw"),
-      },
+      env,
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     },
@@ -1094,21 +1161,22 @@ export function startAdapter(): boolean {
     process.env.API_SERVER_KEY ||
     process.env.HERMES_API_KEY ||
     "";
+  const env = {
+    ...process.env,
+    PATH: getEnhancedPath(),
+    HOME: homedir(),
+    TERM: "dumb",
+    HERMES_API_URL: "http://127.0.0.1:8642",
+    HERMES_API_KEY: apiKey,
+    HERMES_ADAPTER_PORT: String(DEFAULT_ADAPTER_PORT),
+    HERMES_MODEL: "hermes",
+    HERMES_AGENT_NAME: "Hermes",
+    HERMES_HOME: join(homedir(), ".hermes"),
+    OPENCLAW_STATE_DIR: join(homedir(), ".openclaw"),
+  };
   const proc = spawnNode(["server/hermes-gateway-adapter.js"], {
     cwd: HERMES_OFFICE_DIR,
-    env: {
-      ...process.env,
-      PATH: getEnhancedPath(),
-      HOME: homedir(),
-      TERM: "dumb",
-      HERMES_API_URL: "http://127.0.0.1:8642",
-      HERMES_API_KEY: apiKey,
-      HERMES_ADAPTER_PORT: String(DEFAULT_ADAPTER_PORT),
-      HERMES_MODEL: "hermes",
-      HERMES_AGENT_NAME: "Hermes",
-      HERMES_HOME: join(homedir(), ".hermes"),
-      OPENCLAW_STATE_DIR: join(homedir(), ".openclaw"),
-    },
+    env,
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });

@@ -55,48 +55,57 @@ export interface InstallProgress {
 
 export function getEnhancedPath(): string {
   const home = homedir();
-  const extra: string[] = IS_WINDOWS
-    ? [
-        // Bundled by install.ps1 inside HERMES_HOME — these matter when the
-        // user's system PATH doesn't include git or node yet.
-        join(HERMES_HOME, "git", "bin"),
-        join(HERMES_HOME, "git", "cmd"),
-        join(HERMES_HOME, "git", "usr", "bin"),
-        join(HERMES_HOME, "node"),
-        join(HERMES_VENV, "Scripts"),
-        process.env.APPDATA
-          ? join(process.env.APPDATA, "npm")
-          : join(home, "AppData", "Roaming", "npm"),
-        process.env.ProgramFiles
-          ? join(process.env.ProgramFiles, "nodejs")
-          : "C:\\Program Files\\nodejs",
-        process.env["ProgramFiles(x86)"]
-          ? join(process.env["ProgramFiles(x86)"], "nodejs")
-          : "C:\\Program Files (x86)\\nodejs",
-        process.env.LOCALAPPDATA
-          ? join(process.env.LOCALAPPDATA, "Programs", "nodejs")
-          : join(home, "AppData", "Local", "Programs", "nodejs"),
-        join(home, "AppData", "Local", "OpenAI", "Codex", "bin"),
-        // Where `uv` lands when astral.sh's installer runs.
-        join(home, ".local", "bin"),
-        join(home, ".cargo", "bin"),
-        join(home, ".volta", "bin"),
-      ]
-    : [
-        join(home, ".local", "bin"),
-        join(home, ".cargo", "bin"),
-        join(HERMES_VENV, "bin"),
-        // Node version manager shim directories
-        join(home, ".volta", "bin"),
-        join(home, ".asdf", "shims"),
-        join(home, ".local", "share", "fnm", "aliases", "default", "bin"),
-        join(home, ".fnm", "aliases", "default", "bin"),
-        ...resolveNvmBin(home),
-        "/usr/local/bin",
-        "/opt/homebrew/bin",
-        "/opt/homebrew/sbin",
-      ];
-  return [...extra, process.env.PATH || ""].join(delimiter);
+  const extra = (
+    IS_WINDOWS
+      ? [
+          // Bundled by install.ps1 inside HERMES_HOME — these matter when the
+          // user's system PATH doesn't include git or node yet.
+          join(HERMES_HOME, "git", "bin"),
+          join(HERMES_HOME, "git", "cmd"),
+          join(HERMES_HOME, "git", "usr", "bin"),
+          join(HERMES_HOME, "node"),
+          join(HERMES_VENV, "Scripts"),
+          // Common user/system installs used when Claw3D setup runs before or
+          // outside the bundled installer.
+          process.env.NVM_SYMLINK,
+          process.env.APPDATA ? join(process.env.APPDATA, "npm") : undefined,
+          process.env.ProgramFiles
+            ? join(process.env.ProgramFiles, "nodejs")
+            : undefined,
+          process.env["ProgramFiles(x86)"]
+            ? join(process.env["ProgramFiles(x86)"], "nodejs")
+            : undefined,
+          process.env.ProgramFiles
+            ? join(process.env.ProgramFiles, "Git", "cmd")
+            : undefined,
+          process.env.LOCALAPPDATA
+            ? join(process.env.LOCALAPPDATA, "Programs", "Git", "cmd")
+            : undefined,
+          process.env.LOCALAPPDATA
+            ? join(process.env.LOCALAPPDATA, "Programs", "nodejs")
+            : join(home, "AppData", "Local", "Programs", "nodejs"),
+          join(home, "AppData", "Local", "OpenAI", "Codex", "bin"),
+          // Where `uv` lands when astral.sh's installer runs.
+          join(home, ".local", "bin"),
+          join(home, ".cargo", "bin"),
+          join(home, ".volta", "bin"),
+        ]
+      : [
+          join(home, ".local", "bin"),
+          join(home, ".cargo", "bin"),
+          join(HERMES_VENV, "bin"),
+          // Node version manager shim directories
+          join(home, ".volta", "bin"),
+          join(home, ".asdf", "shims"),
+          join(home, ".local", "share", "fnm", "aliases", "default", "bin"),
+          join(home, ".fnm", "aliases", "default", "bin"),
+          ...resolveNvmBin(home),
+          "/usr/local/bin",
+          "/opt/homebrew/bin",
+          "/opt/homebrew/sbin",
+        ]
+  ).filter((entry): entry is string => Boolean(entry));
+  return [...extra, process.env.PATH || ""].filter(Boolean).join(delimiter);
 }
 
 /** Resolve the active nvm node version's bin directory. */

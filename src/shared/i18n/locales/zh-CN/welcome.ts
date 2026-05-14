@@ -6,6 +6,7 @@ export default {
   retryInstall: "重新安装",
   terminalInstallHint: "也可以先通过终端安装，然后再回来：",
   recheck: "我已安装完成，重新检查",
+  switchToLocal: "切换到本地模式",
   installSizeHint: "这将安装所需组件（约 2 GB）",
   copyInstallCommand: "复制安装命令",
   dividerOr: "或",

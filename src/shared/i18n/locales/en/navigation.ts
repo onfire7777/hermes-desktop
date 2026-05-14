@@ -10,6 +10,7 @@ export default {
   memory: "Memory",
   tools: "Tools",
   schedules: "Schedules",
+  kanban: "Kanban",
   gateway: "Gateway",
   settings: "Settings",
 } as const;

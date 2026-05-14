@@ -7,6 +7,7 @@ export default {
   retryInstall: "Ulangi Instalasi",
   terminalInstallHint: "Instal melalui terminal, lalu kembali ke sini:",
   recheck: "Saya sudah menginstalnya - periksa lagi",
+  switchToLocal: "Beralih ke mode lokal",
   installSizeHint: "Ini akan menginstal komponen yang diperlukan (~2 GB)",
   copyInstallCommand: "Salin perintah instalasi",
   dividerOr: "atau",

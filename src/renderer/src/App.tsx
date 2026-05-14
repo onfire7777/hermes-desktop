@@ -16,6 +16,9 @@ const SPLASH_MIN_MS = 1300;
 function App(): React.JSX.Element {
   const [screen, setScreen] = useState<Screen>("splash");
   const [installError, setInstallError] = useState<string | null>(null);
+  const [connectionMode, setConnectionMode] = useState<
+    "local" | "remote" | "ssh"
+  >("local");
   // Soft warning: install files exist but the deep `verifyInstall` probe
   // failed (e.g. slow Python startup, restricted network). We surface this
   // as a dismissible banner instead of bouncing the user back to Welcome,
@@ -33,6 +36,7 @@ function App(): React.JSX.Element {
     try {
       const conn = await window.hermesAPI.getConnectionConfig();
       isRemote = conn.mode === "remote" || conn.mode === "ssh";
+      setConnectionMode(conn.mode);
 
       if (conn.mode === "ssh" && conn.ssh) {
         // Start (or ensure) the SSH tunnel, then go straight to main
@@ -123,6 +127,12 @@ function App(): React.JSX.Element {
     runInstallCheck();
   }
 
+  async function handleSwitchToLocal(): Promise<void> {
+    await window.hermesAPI.setConnectionConfig("local", "", "");
+    setConnectionMode("local");
+    handleRecheck();
+  }
+
   function handleVerifyReinstall(): void {
     setVerifyWarning(false);
     setInstallError(null);
@@ -141,8 +151,10 @@ function App(): React.JSX.Element {
         return (
           <Welcome
             error={installError}
+            connectionMode={connectionMode}
             onStart={handleRetryInstall}
             onRecheck={handleRecheck}
+            onSwitchToLocal={handleSwitchToLocal}
           />
         );
       case "installing":

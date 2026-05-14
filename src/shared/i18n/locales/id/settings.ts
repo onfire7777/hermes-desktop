@@ -22,6 +22,7 @@ export default {
   },
   notDetected: "Tidak terdeteksi",
   updatedSuccessfully: "Berhasil diperbarui!",
+  updateSuccess: "Hermes berhasil diperbarui.",
   updateFailed: "Pembaruan gagal.",
   version: "v{{version}}",
   proxyPlaceholder: "mis. socks5://127.0.0.1:1080 atau http://proxy:8080",

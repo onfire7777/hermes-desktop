@@ -13,16 +13,20 @@ import { useI18n } from "../../components/useI18n";
 
 interface WelcomeProps {
   error: string | null;
+  connectionMode: "local" | "remote" | "ssh";
   onStart: () => void;
   onRecheck: () => void;
+  onSwitchToLocal: () => void;
 }
 
 type ConnectionPanel = "none" | "remote" | "ssh";
 
 function Welcome({
   error,
+  connectionMode,
   onStart,
   onRecheck,
+  onSwitchToLocal,
 }: WelcomeProps): React.JSX.Element {
   const { t } = useI18n();
   const [panel, setPanel] = useState<ConnectionPanel>("none");
@@ -356,6 +360,14 @@ function Welcome({
             >
               {t("welcome.recheck")}
             </button>
+            {connectionMode !== "local" && (
+              <button
+                className="btn btn-secondary welcome-recheck-btn"
+                onClick={onSwitchToLocal}
+              >
+                {t("welcome.switchToLocal")}
+              </button>
+            )}
             <div className="welcome-divider">
               <span>{t("welcome.dividerOr")}</span>
             </div>

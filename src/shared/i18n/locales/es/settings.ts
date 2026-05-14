@@ -21,6 +21,7 @@ export default {
   },
   notDetected: "No detectado",
   updatedSuccessfully: "¡Actualizado correctamente!",
+  updateSuccess: "Hermes se actualizó correctamente.",
   updateFailed: "La actualización falló.",
   version: "v{{version}}",
   proxyPlaceholder: "p. ej. socks5://127.0.0.1:1080 o http://proxy:8080",

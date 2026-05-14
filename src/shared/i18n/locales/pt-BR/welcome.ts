@@ -7,6 +7,7 @@ export default {
   retryInstall: "Tentar Instalação Novamente",
   terminalInstallHint: "Instale via terminal e depois volte aqui:",
   recheck: "Eu já instalei — verificar novamente",
+  switchToLocal: "Mudar para modo local",
   installSizeHint: "Isso instalará os componentes necessários (~2 GB)",
   copyInstallCommand: "Copiar comando de instalação",
   dividerOr: "ou",

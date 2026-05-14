@@ -48,6 +48,7 @@ describe("renderer feature surface", () => {
       "agents",
       "chat",
       "gateway",
+      "kanban",
       "memory",
       "models",
       "office",

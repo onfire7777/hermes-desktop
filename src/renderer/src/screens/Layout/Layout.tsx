@@ -12,6 +12,7 @@ import Office from "../Office/Office";
 import Models from "../Models/Models";
 import Providers from "../Providers/Providers";
 import Schedules from "../Schedules/Schedules";
+import Kanban from "../Kanban/Kanban";
 import RemoteNotice from "../../components/RemoteNotice";
 import VerifyWarningBanner from "../../components/VerifyWarningBanner";
 import hermeslogo from "../../assets/hermes.png";
@@ -29,6 +30,7 @@ import {
   Layers,
   KeyRound,
   Timer,
+  Kanban as KanbanIcon,
   Download,
 } from "../../assets/icons";
 import type { LucideIcon } from "lucide-react";
@@ -46,6 +48,7 @@ type View =
   | "memory"
   | "tools"
   | "schedules"
+  | "kanban"
   | "gateway"
   | "settings";
 
@@ -54,6 +57,7 @@ const NAV_ITEMS: { view: View; icon: LucideIcon; labelKey: string }[] = [
   { view: "sessions", icon: Clock, labelKey: "navigation.sessions" },
   { view: "agents", icon: Users, labelKey: "navigation.agents" },
   { view: "office", icon: Building, labelKey: "navigation.office" },
+  { view: "kanban", icon: KanbanIcon, labelKey: "navigation.kanban" },
   { view: "models", icon: Layers, labelKey: "navigation.models" },
   { view: "providers", icon: KeyRound, labelKey: "navigation.providers" },
   { view: "skills", icon: Puzzle, labelKey: "navigation.skills" },
@@ -346,6 +350,16 @@ function Layout({
         {visitedViews.has("schedules") && (
           <div style={paneStyle("schedules")}>
             <Schedules profile={activeProfile} />
+          </div>
+        )}
+
+        {visitedViews.has("kanban") && (
+          <div style={paneStyle("kanban")}>
+            {remoteMode ? (
+              <RemoteNotice feature="Kanban" />
+            ) : (
+              <Kanban profile={activeProfile} visible={view === "kanban"} />
+            )}
           </div>
         )}
 
