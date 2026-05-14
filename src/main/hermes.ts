@@ -8,6 +8,7 @@ import {
   HERMES_HOME,
   HERMES_REPO,
   HERMES_PYTHON,
+  HERMES_PYTHONW,
   hermesCliArgs,
   getEnhancedPath,
 } from "./installer";
@@ -754,6 +755,9 @@ let gatewayStartedByApp = false;
 export function startGateway(profile?: string): boolean {
   ensureInitialized();
   if (isGatewayRunning()) return true;
+  const gatewayPython = existsSync(HERMES_PYTHONW)
+    ? HERMES_PYTHONW
+    : HERMES_PYTHON;
 
   // Build gateway env with profile API keys
   const gatewayEnv: Record<string, string> = {
@@ -762,6 +766,10 @@ export function startGateway(profile?: string): boolean {
     HOME: homedir(),
     HERMES_HOME: HERMES_HOME,
     API_SERVER_ENABLED: "true", // Ensure API server starts with gateway
+    PYTHONIOENCODING: "utf-8",
+    PYTHONUTF8: "1",
+    HERMES_GATEWAY_DETACHED: "1",
+    VIRTUAL_ENV: join(HERMES_REPO, "venv"),
   };
 
   // Inject ALL profile API keys so the gateway can authenticate with any provider.
@@ -772,13 +780,17 @@ export function startGateway(profile?: string): boolean {
     }
   }
 
-  gatewayProcess = spawn(HERMES_PYTHON, hermesCliArgs(["gateway"]), {
-    cwd: HERMES_REPO,
-    env: gatewayEnv,
-    stdio: "ignore",
-    detached: true,
-    windowsHide: true,
-  });
+  gatewayProcess = spawn(
+    gatewayPython,
+    hermesCliArgs(["gateway", "run", "--replace"]),
+    {
+      cwd: HERMES_REPO,
+      env: gatewayEnv,
+      stdio: "ignore",
+      detached: true,
+      windowsHide: true,
+    },
+  );
 
   gatewayProcess.unref();
 

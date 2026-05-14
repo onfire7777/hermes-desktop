@@ -77,4 +77,24 @@ describe("Windows child process launch hygiene", () => {
     expect(indexSource).toContain("if (await getGatewayStatus()) return true;");
     expect(indexSource).toContain("if (!(await getGatewayStatus()))");
   });
+
+  it("starts the local gateway through pythonw with the direct hidden run command", () => {
+    const installerSource = readFileSync(
+      join(process.cwd(), "src", "main", "installer.ts"),
+      "utf-8",
+    );
+    const hermesSource = readFileSync(
+      join(process.cwd(), "src", "main", "hermes.ts"),
+      "utf-8",
+    );
+
+    expect(installerSource).toContain("export const HERMES_PYTHONW");
+    expect(installerSource).toContain('"pythonw.exe"');
+    expect(hermesSource).toContain("HERMES_PYTHONW");
+    expect(hermesSource).toContain(
+      'hermesCliArgs(["gateway", "run", "--replace"])',
+    );
+    expect(hermesSource).toContain('HERMES_GATEWAY_DETACHED: "1"');
+    expect(hermesSource).toContain("windowsHide: true");
+  });
 });

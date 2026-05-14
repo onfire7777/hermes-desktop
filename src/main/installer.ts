@@ -24,6 +24,9 @@ export const HERMES_VENV = join(HERMES_REPO, "venv");
 export const HERMES_PYTHON = IS_WINDOWS
   ? join(HERMES_VENV, "Scripts", "python.exe")
   : join(HERMES_VENV, "bin", "python");
+export const HERMES_PYTHONW = IS_WINDOWS
+  ? join(HERMES_VENV, "Scripts", "pythonw.exe")
+  : HERMES_PYTHON;
 export const HERMES_SCRIPT = IS_WINDOWS
   ? join(HERMES_VENV, "Scripts", "hermes.exe")
   : join(HERMES_REPO, "hermes");
